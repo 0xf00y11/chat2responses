@@ -1,0 +1,14 @@
+{
+  "Upstream": {
+    "BaseURL": "",
+    "APIKey": ""
+  },
+  "Server": {
+    "Host": "0.0.0.0",
+    "Port": 8000
+  },
+  "Model": {
+    "DefaultModel": "gpt-4o"
+  },
+  "Debug": false
+}
