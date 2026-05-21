@@ -1,6 +1,6 @@
-// Package config - chat2responses configuration loader
-//
-// Copyright (c) 2025 talkcozy. MIT License.
+// Package config - 配置管理 - 加载、保存和解析 chat2responses 配置文件
+// Copyright (c) 2026 fooyii.
+// Created: 2026-05-22
 
 package config
 
@@ -94,3 +94,4 @@ func Save(cfg *Config, path string) error {
 	}
 	return nil
 }
+

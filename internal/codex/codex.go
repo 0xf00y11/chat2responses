@@ -1,6 +1,6 @@
-// Package codex - Codex CLI configuration management
-//
-// Copyright (c) 2025 fooyii. MIT License.
+// Package codex - Codex CLI 配置管理 - 配置代理连接和模型提供商
+// Copyright (c) 2026 fooyii.
+// Created: 2026-05-22
 
 package codex
 
@@ -144,3 +144,4 @@ func Status() (string, error) {
 
 	return status, nil
 }
+

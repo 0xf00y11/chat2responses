@@ -1,8 +1,6 @@
-// Package model - chat2responses - Chat Completions to Responses API proxy for OpenAI Codex CLI
-//
-// Copyright (c) 2025 talkcozy. MIT License.
-// SPDX-License-Identifier: MIT
-
+// Package model - chat2responses 数据模型定义 - 提供 Chat Completions 和 Responses API 的数据结构
+// Copyright (c) 2026 fooyii.
+// Created: 2026-05-22
 
 package model
 
@@ -75,3 +73,4 @@ func MakeID(prefix ...string) string {
 	}
 	return fmt.Sprintf("%s_%x", p, time.Now().UnixNano())
 }
+

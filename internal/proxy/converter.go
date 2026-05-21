@@ -1,8 +1,6 @@
-// Package proxy - chat2responses - Chat Completions to Responses API proxy for OpenAI Codex CLI
-//
-// Copyright (c) 2025 talkcozy. MIT License.
-// SPDX-License-Identifier: MIT
-
+// Package proxy - 上游 API 客户端 - 转发 Chat Completions 请求并处理流式/非流式响应
+// Copyright (c) 2026 fooyii.
+// Created: 2026-05-22
 
 package proxy
 
@@ -224,3 +222,4 @@ func ChatToResponses(chat *model.ChatResponse, defaultModel, respID string) *mod
 
 	return resp
 }
+

@@ -1,6 +1,6 @@
-// cmd/chat2responses - chat2responses entry point
-//
-// Copyright (c) 2025 fooyii. MIT License.
+// cmd/chat2responses - chat2responses 主程序入口 - 交互式设置向导与代理服务器
+// Copyright (c) 2026 fooyii.
+// Created: 2026-05-22
 
 package main
 
@@ -133,3 +133,4 @@ func maskKey(key string) string {
 	}
 	return key[:3] + "..." + key[len(key)-3:]
 }
+

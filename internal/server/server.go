@@ -1,6 +1,6 @@
-// Package server - chat2responses HTTP server
-//
-// Copyright (c) 2025 talkcozy. MIT License.
+// Package server - chat2responses HTTP 服务端 - 提供 Responses API 代理端点
+// Copyright (c) 2026 fooyii.
+// Created: 2026-05-22
 
 package server
 
@@ -136,3 +136,4 @@ func Run(cfg *config.Config) {
 		os.Exit(1)
 	}
 }
+
