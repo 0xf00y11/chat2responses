@@ -31,6 +31,7 @@ type ResponseTool struct {
 	Name        string                 `json:"name,omitempty"`
 	Description string                 `json:"description,omitempty"`
 	Parameters  map[string]interface{} `json:"parameters,omitempty"`
+	Function    *ChatToolFunction      `json:"function,omitempty"`
 }
 
 type ResponsesResponse struct {

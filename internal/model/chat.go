@@ -12,6 +12,7 @@ type ChatRequest struct {
 	Temperature *float64      `json:"temperature,omitempty"`
 	TopP        *float64      `json:"top_p,omitempty"`
 	Tools       []ChatTool    `json:"tools,omitempty"`
+	ParallelToolCalls *bool          `json:"parallel_tool_calls,omitempty"`
 	ToolChoice  interface{}   `json:"tool_choice,omitempty"`
 }
 

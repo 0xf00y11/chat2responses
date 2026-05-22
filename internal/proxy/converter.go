@@ -51,12 +51,18 @@ func InputToMessages(body *model.ResponsesRequest) []model.ChatMessage {
 				cid, _ = tc["id"].(string)
 			}
 			name, _ := tc["name"].(string)
+			if name == "" {
+				name, _ = tc["function"].(string)
+			}
 			args, _ := tc["arguments"].(string)
 			if args == "" {
 				if a, ok := tc["arguments"].(map[string]interface{}); ok {
 					b, _ := json.Marshal(a)
 					args = string(b)
 				}
+			}
+			if cid == "" || name == "" {
+				continue
 			}
 			calls = append(calls, model.ChatToolCall{
 				ID:   cid,
@@ -155,18 +161,49 @@ func BuildChatRequest(body *model.ResponsesRequest) *model.ChatRequest {
 	}
 
 	for _, t := range body.Tools {
+		name := t.Name
+		desc := t.Description
+		params := t.Parameters
+		// Handle nested function object (OpenAI format)
+		if t.Function != nil {
+			if name == "" {
+				name = t.Function.Name
+			}
+			if desc == "" {
+				desc = t.Function.Description
+			}
+			if params == nil {
+				params = t.Function.Parameters
+			}
+		}
+		// Skip tools with empty names (e.g. multi_agent_v1 which is Responses API specific)
+		if name == "" {
+			continue
+		}
 		req.Tools = append(req.Tools, model.ChatTool{
 			Type: "function",
 			Function: &model.ChatToolFunction{
-				Name:        t.Name,
-				Description: t.Description,
-				Parameters:  t.Parameters,
+				Name:        name,
+				Description: desc,
+				Parameters:  params,
 			},
 		})
 	}
 
 	if body.ToolChoice != nil {
+		// Convert Responses API tool_choice to Chat Completions format
+		if tc, ok := body.ToolChoice.(map[string]interface{}); ok {
+			if tc["type"] == "function" && tc["function"] == nil {
+				if name, ok := tc["name"].(string); ok && name != "" {
+					delete(tc, "name")
+					tc["function"] = map[string]interface{}{"name": name}
+				}
+			}
+		}
 		req.ToolChoice = body.ToolChoice
+	}
+	if body.ParallelToolCalls != nil {
+		req.ParallelToolCalls = body.ParallelToolCalls
 	}
 
 	return req

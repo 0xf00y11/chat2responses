@@ -145,3 +145,13 @@ func Status() (string, error) {
 	return status, nil
 }
 
+
+func IsConfigured() bool {
+	path, err := configPath()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(path)
+	return err == nil
+}
+

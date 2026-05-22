@@ -39,7 +39,8 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 
 	var fullText strings.Builder
 	var tcBuilders []*toolCallBuilder
-		var currentModel string
+	var currentModel string
+	var usageData map[string]interface{}
 
 	msgID := model.MakeID()
 
@@ -124,6 +125,11 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 
 		if fr, ok := choice["finish_reason"].(string); ok && fr != "" && fr != "null" {
 			_ = fr  // finish_reason passthrough
+		}
+
+		// Capture usage from final chunk (OpenAI sends usage alongside finish_reason)
+		if u, ok := chunk["usage"].(map[string]interface{}); ok {
+			usageData = u
 		}
 
 		// Content delta
@@ -324,11 +330,33 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 			"status": "completed",
 			"model":  currentModel,
 			"output": outputItems,
-			"usage":  map[string]interface{}{},
+			"usage":  buildUsage(usageData),
 		},
 	})
 
 	fmt.Fprintf(w, "data: [DONE]\n\n")
 	return nil
+}
+
+func buildUsage(u map[string]interface{}) map[string]interface{} {
+	result := map[string]interface{}{
+		"input_tokens":  0,
+		"output_tokens": 0,
+		"total_tokens":  0,
+	}
+	if u == nil {
+		return result
+	}
+	// Map upstream Chat Completions tokens to Responses API token fields
+	if v, ok := u["prompt_tokens"]; ok {
+		result["input_tokens"] = v
+	}
+	if v, ok := u["completion_tokens"]; ok {
+		result["output_tokens"] = v
+	}
+	if v, ok := u["total_tokens"]; ok {
+		result["total_tokens"] = v
+	}
+	return result
 }
 
