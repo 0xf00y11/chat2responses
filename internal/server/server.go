@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"chat2responses/internal/config"
 	"chat2responses/internal/model"
@@ -80,13 +81,33 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	respID := model.MakeID()
 	chatReq := proxy.BuildChatRequest(&req)
 
+	start := time.Now()
+
+	toolNames := make([]string, 0, len(req.Tools))
+	for _, t := range req.Tools {
+		name := t.Name
+		if name == "" && t.Function != nil {
+			name = t.Function.Name
+		}
+		if name != "" {
+			toolNames = append(toolNames, name)
+		}
+	}
+
 	slog.Info("request",
+		"req_id", respID,
 		"method", r.Method,
 		"path", r.URL.Path,
 		"model", chatReq.Model,
 		"stream", chatReq.Stream,
 		"messages", len(chatReq.Messages),
-		"tools", len(chatReq.Tools),
+		"instructions", len(req.Instructions) > 0,
+		"max_tokens", req.MaxOutputTokens,
+		"temperature", req.Temperature,
+		"tools", len(req.Tools),
+		"tool_names", toolNames,
+		"tool_choice", req.ToolChoice,
+		"body_bytes", len(body),
 	)
 
 	if req.Stream {
@@ -106,6 +127,11 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		if err := converter.Convert(upstreamBody, w); err != nil {
 			slog.Error("stream convert", "error", err)
 		}
+		slog.Info("completed",
+			"req_id", respID,
+			"model", chatReq.Model,
+			"duration", time.Since(start).String(),
+		)
 		return
 	}
 
@@ -118,6 +144,18 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := proxy.ChatToResponses(chatResp, chatReq.Model, respID)
+
+	usage := ""
+	if resp.Usage != nil {
+		usage = fmt.Sprintf("in=%d out=%d total=%d", resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.TotalTokens)
+	}
+
+	slog.Info("completed",
+		"req_id", respID,
+		"model", chatReq.Model,
+		"duration", time.Since(start).String(),
+		"usage", usage,
+	)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
