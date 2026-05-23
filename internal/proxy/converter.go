@@ -1,7 +1,3 @@
-// Package proxy - 上游 API 客户端 - 转发 Chat Completions 请求并处理流式/非流式响应
-// Copyright (c) 2026 fooyii.
-// Created: 2026-05-22
-
 package proxy
 
 import (
@@ -12,15 +8,10 @@ import (
 	"chat2responses/internal/model"
 )
 
+// InputToMessages converts a Responses API input payload into Chat Completions messages.
+// It does NOT handle instructions (handled by the session-aware server layer).
 func InputToMessages(body *model.ResponsesRequest) []model.ChatMessage {
 	var messages []model.ChatMessage
-
-	if body.Instructions != "" {
-		messages = append(messages, model.ChatMessage{
-			Role:    "system",
-			Content: body.Instructions,
-		})
-	}
 
 	if len(body.Input) == 0 {
 		return messages
@@ -149,66 +140,6 @@ func extractContent(item map[string]interface{}) interface{} {
 	}
 }
 
-func BuildChatRequest(body *model.ResponsesRequest) *model.ChatRequest {
-	messages := InputToMessages(body)
-	req := &model.ChatRequest{
-		Model:       body.Model,
-		Messages:    messages,
-		Stream:      body.Stream,
-		MaxTokens:   body.MaxOutputTokens,
-		Temperature: body.Temperature,
-		TopP:        body.TopP,
-	}
-
-	for _, t := range body.Tools {
-		name := t.Name
-		desc := t.Description
-		params := t.Parameters
-		// Handle nested function object (OpenAI format)
-		if t.Function != nil {
-			if name == "" {
-				name = t.Function.Name
-			}
-			if desc == "" {
-				desc = t.Function.Description
-			}
-			if params == nil {
-				params = t.Function.Parameters
-			}
-		}
-		// Skip tools with empty names (e.g. multi_agent_v1 which is Responses API specific)
-		if name == "" {
-			continue
-		}
-		req.Tools = append(req.Tools, model.ChatTool{
-			Type: "function",
-			Function: &model.ChatToolFunction{
-				Name:        name,
-				Description: desc,
-				Parameters:  params,
-			},
-		})
-	}
-
-	if body.ToolChoice != nil {
-		// Convert Responses API tool_choice to Chat Completions format
-		if tc, ok := body.ToolChoice.(map[string]interface{}); ok {
-			if tc["type"] == "function" && tc["function"] == nil {
-				if name, ok := tc["name"].(string); ok && name != "" {
-					delete(tc, "name")
-					tc["function"] = map[string]interface{}{"name": name}
-				}
-			}
-		}
-		req.ToolChoice = body.ToolChoice
-	}
-	if body.ParallelToolCalls != nil {
-		req.ParallelToolCalls = body.ParallelToolCalls
-	}
-
-	return req
-}
-
 func ChatToResponses(chat *model.ChatResponse, defaultModel, respID string) *model.ResponsesResponse {
 	resp := &model.ResponsesResponse{
 		ID:      respID,
@@ -259,4 +190,3 @@ func ChatToResponses(chat *model.ChatResponse, defaultModel, respID string) *mod
 
 	return resp
 }
-

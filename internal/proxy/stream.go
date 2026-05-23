@@ -1,7 +1,3 @@
-// Package proxy - 上游 API 客户端 - 转发 Chat Completions 请求并处理流式/非流式响应
-// Copyright (c) 2026 fooyii.
-// Created: 2026-05-22
-
 package proxy
 
 import (
@@ -22,12 +18,22 @@ type toolCallBuilder struct {
 }
 
 type StreamConverter struct {
-	model  string
-	respID string
+	model              string
+	respID             string
+	collectedText      strings.Builder
+	collectedToolCalls []model.ChatToolCall
 }
 
 func NewStreamConverter(model, respID string) *StreamConverter {
 	return &StreamConverter{model: model, respID: respID}
+}
+
+func (sc *StreamConverter) CollectedText() string {
+	return sc.collectedText.String()
+}
+
+func (sc *StreamConverter) CollectedToolCalls() []model.ChatToolCall {
+	return sc.collectedToolCalls
 }
 
 func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
@@ -37,10 +43,9 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 
-	var fullText strings.Builder
-	var tcBuilders []*toolCallBuilder
 	var currentModel string
 	var usageData map[string]interface{}
+	var tcBuilders []*toolCallBuilder
 
 	msgID := model.MakeID()
 
@@ -123,18 +128,14 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 			continue
 		}
 
-		if fr, ok := choice["finish_reason"].(string); ok && fr != "" && fr != "null" {
-			_ = fr  // finish_reason passthrough
-		}
-
-		// Capture usage from final chunk (OpenAI sends usage alongside finish_reason)
+		// Capture usage from final chunk
 		if u, ok := chunk["usage"].(map[string]interface{}); ok {
 			usageData = u
 		}
 
 		// Content delta
 		if content, ok := delta["content"].(string); ok && content != "" {
-			fullText.WriteString(content)
+			sc.collectedText.WriteString(content)
 			sendEvent(map[string]interface{}{
 				"type":         "response.output_text.delta",
 				"item_id":      msgID,
@@ -242,7 +243,7 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 	}
 
 	// content_part.done
-	if fullText.Len() > 0 {
+	if sc.collectedText.Len() > 0 {
 		sendEvent(map[string]interface{}{
 			"type":         "response.content_part.done",
 			"item_id":      msgID,
@@ -250,7 +251,7 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 			"part_index":   0,
 			"part": map[string]interface{}{
 				"type":        "output_text",
-				"text":        fullText.String(),
+				"text":        sc.collectedText.String(),
 				"annotations": []interface{}{},
 			},
 		})
@@ -265,7 +266,7 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 				"status":  "completed",
 				"content": []interface{}{map[string]interface{}{
 					"type":        "output_text",
-					"text":        fullText.String(),
+					"text":        sc.collectedText.String(),
 					"annotations": []interface{}{},
 				}},
 			},
@@ -293,11 +294,20 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 				"status":    "completed",
 			},
 		})
+
+		sc.collectedToolCalls = append(sc.collectedToolCalls, model.ChatToolCall{
+			ID:   builder.ID,
+			Type: "function",
+			Function: model.ChatFunction{
+				Name:      builder.Name,
+				Arguments: args,
+			},
+		})
 	}
 
 	// Build output items
 	var outputItems []interface{}
-	if fullText.Len() > 0 {
+	if sc.collectedText.Len() > 0 {
 		outputItems = append(outputItems, map[string]interface{}{
 			"id":      msgID,
 			"type":    "message",
@@ -305,7 +315,7 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 			"status":  "completed",
 			"content": []interface{}{map[string]interface{}{
 				"type":        "output_text",
-				"text":        fullText.String(),
+				"text":        sc.collectedText.String(),
 				"annotations": []interface{}{},
 			}},
 		})
@@ -347,7 +357,6 @@ func buildUsage(u map[string]interface{}) map[string]interface{} {
 	if u == nil {
 		return result
 	}
-	// Map upstream Chat Completions tokens to Responses API token fields
 	if v, ok := u["prompt_tokens"]; ok {
 		result["input_tokens"] = v
 	}
@@ -359,4 +368,3 @@ func buildUsage(u map[string]interface{}) map[string]interface{} {
 	}
 	return result
 }
-

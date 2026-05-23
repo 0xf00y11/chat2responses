@@ -1,7 +1,3 @@
-// Package server - chat2responses HTTP 服务端 - 提供 Responses API 代理端点
-// Copyright (c) 2026 fooyii.
-// Created: 2026-05-22
-
 package server
 
 import (
@@ -16,19 +12,22 @@ import (
 	"chat2responses/internal/config"
 	"chat2responses/internal/model"
 	"chat2responses/internal/proxy"
+	"chat2responses/internal/session"
 )
 
 type Server struct {
-	cfg    *config.Config
-	client *proxy.UpstreamClient
-	mux    *http.ServeMux
+	cfg     *config.Config
+	client  *proxy.UpstreamClient
+	session *session.Store
+	mux     *http.ServeMux
 }
 
 func New(cfg *config.Config) *Server {
 	s := &Server{
-		cfg:    cfg,
-		client: proxy.NewUpstreamClient(cfg.Upstream.BaseURL, cfg.Upstream.APIKey, cfg.Model.DefaultModel),
-		mux:    http.NewServeMux(),
+		cfg:     cfg,
+		client:  proxy.NewUpstreamClient(cfg.Upstream.BaseURL, cfg.Upstream.APIKey, cfg.Model.DefaultModel),
+		session: session.NewStore(),
+		mux:     http.NewServeMux(),
 	}
 	s.mux.HandleFunc("POST /v1/responses", s.handleResponses)
 	s.mux.HandleFunc("GET /v1/models", s.handleModels)
@@ -79,7 +78,83 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respID := model.MakeID()
-	chatReq := proxy.BuildChatRequest(&req)
+
+	// Build messages from this request
+	newMessages := proxy.InputToMessages(&req)
+
+	// Look up previous session to reconstruct the full conversation
+	var fullMessages []model.ChatMessage
+	if req.PreviousResponseID != "" {
+		if history := s.session.Get(req.PreviousResponseID); history != nil {
+			fullMessages = append(fullMessages, history...)
+		} else {
+			slog.Warn("previous_response_id not found, starting fresh",
+				"prev_id", req.PreviousResponseID,
+			)
+		}
+	}
+
+	// If this is the first request in a session, include instructions as system message
+	isNewSession := len(fullMessages) == 0
+	if isNewSession && req.Instructions != "" {
+		fullMessages = append(fullMessages, model.ChatMessage{
+			Role:    "system",
+			Content: req.Instructions,
+		})
+	}
+
+	fullMessages = append(fullMessages, newMessages...)
+
+	chatReq := &model.ChatRequest{
+		Model:             req.Model,
+		Messages:          fullMessages,
+		Stream:            req.Stream,
+		MaxTokens:         req.MaxOutputTokens,
+		Temperature:       req.Temperature,
+		TopP:              req.TopP,
+		ParallelToolCalls: req.ParallelToolCalls,
+		ToolChoice:        req.ToolChoice,
+	}
+
+	// Build tools
+	for _, t := range req.Tools {
+		name := t.Name
+		desc := t.Description
+		params := t.Parameters
+		if t.Function != nil {
+			if name == "" {
+				name = t.Function.Name
+			}
+			if desc == "" {
+				desc = t.Function.Description
+			}
+			if params == nil {
+				params = t.Function.Parameters
+			}
+		}
+		if name == "" {
+			continue
+		}
+		chatReq.Tools = append(chatReq.Tools, model.ChatTool{
+			Type: "function",
+			Function: &model.ChatToolFunction{
+				Name:        name,
+				Description: desc,
+				Parameters:  params,
+			},
+		})
+	}
+
+	if chatReq.ToolChoice != nil {
+		if tc, ok := chatReq.ToolChoice.(map[string]interface{}); ok {
+			if tc["type"] == "function" && tc["function"] == nil {
+				if name, ok := tc["name"].(string); ok && name != "" {
+					delete(tc, "name")
+					tc["function"] = map[string]interface{}{"name": name}
+				}
+			}
+		}
+	}
 
 	start := time.Now()
 
@@ -96,6 +171,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("request",
 		"req_id", respID,
+		"prev_id", req.PreviousResponseID,
 		"method", r.Method,
 		"path", r.URL.Path,
 		"model", chatReq.Model,
@@ -123,10 +199,22 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		converter := proxy.NewStreamConverter(chatReq.Model, respID)
-		if err := converter.Convert(upstreamBody, w); err != nil {
+		// For streaming, we collect the assistant response to store in session
+		result := proxy.NewStreamConverter(chatReq.Model, respID)
+		if err := result.Convert(upstreamBody, w); err != nil {
 			slog.Error("stream convert", "error", err)
 		}
+
+		// Store session: existing history + new user input + assistant response
+		assistantMsg := model.ChatMessage{Role: "assistant", Content: result.CollectedText()}
+		fullWithResponse := append(fullMessages, assistantMsg)
+		if result.CollectedToolCalls() != nil {
+			fullWithResponse[len(fullWithResponse)-1].ToolCalls = result.CollectedToolCalls()
+		}
+		if result.CollectedText() != "" || len(result.CollectedToolCalls()) > 0 {
+			s.session.Set(respID, fullWithResponse)
+		}
+
 		slog.Info("completed",
 			"req_id", respID,
 			"model", chatReq.Model,
@@ -144,6 +232,13 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := proxy.ChatToResponses(chatResp, chatReq.Model, respID)
+
+	// Store session: existing history + new user input + assistant response
+	if len(chatResp.Choices) > 0 {
+		assistantMsg := chatResp.Choices[0].Message
+		fullWithResponse := append(fullMessages, assistantMsg)
+		s.session.Set(respID, fullWithResponse)
+	}
 
 	usage := ""
 	if resp.Usage != nil {
@@ -174,4 +269,3 @@ func Run(cfg *config.Config) {
 		os.Exit(1)
 	}
 }
-
