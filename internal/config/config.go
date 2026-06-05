@@ -12,24 +12,24 @@ import (
 )
 
 type UpstreamConfig struct {
-	BaseURL string ` + BT + 'json:"base_url"' + BT + `
-	APIKey  string ` + BT + 'json:"api_key"' + BT + `
+	BaseURL string `json:"base_url"`
+	APIKey  string `json:"api_key"`
 }
 
 type ServerConfig struct {
-	Host string ` + BT + 'json:"host"' + BT + `
-	Port int    ` + BT + 'json:"port"' + BT + `
+	Host string `json:"host"`
+	Port int    `json:"port"`
 }
 
 type ModelConfig struct {
-	DefaultModel string ` + BT + 'json:"default_model"' + BT + `
+	DefaultModel string `json:"default_model"`
 }
 
 type Config struct {
-	Upstream UpstreamConfig ` + BT + 'json:"upstream"' + BT + `
-	Server   ServerConfig   ` + BT + 'json:"server"' + BT + `
-	Model    ModelConfig    ` + BT + 'json:"model"' + BT + `
-	Debug    bool           ` + BT + 'json:"debug"' + BT + `
+	Upstream UpstreamConfig `json:"upstream"`
+	Server   ServerConfig   `json:"server"`
+	Model    ModelConfig    `json:"model"`
+	Debug    bool           `json:"debug"`
 }
 
 var DefaultConfig = Config{
@@ -83,7 +83,6 @@ func (c *Config) ResolveModel(requested string) string {
 	return c.Model.DefaultModel
 }
 
-
 func Save(cfg *Config, path string) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -94,4 +93,3 @@ func Save(cfg *Config, path string) error {
 	}
 	return nil
 }
-

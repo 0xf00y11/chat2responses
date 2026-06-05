@@ -10,7 +10,7 @@ import (
 
 // InputToMessages converts a Responses API input payload into Chat Completions messages.
 // It does NOT handle instructions (handled by the session-aware server layer).
-func InputToMessages(body *model.ResponsesRequest) []model.ChatMessage {
+func InputToMessages(body *model.ResponsesRequest, lookupSig func(string) string) []model.ChatMessage {
 	var messages []model.ChatMessage
 
 	if len(body.Input) == 0 {
@@ -55,10 +55,25 @@ func InputToMessages(body *model.ResponsesRequest) []model.ChatMessage {
 			if cid == "" || name == "" {
 				continue
 			}
+			thoughtSig, _ := tc["thought_signature"].(string)
+			if thoughtSig == "" {
+				if ec, ok := tc["extra_content"].(map[string]interface{}); ok {
+					if google, ok := ec["google"].(map[string]interface{}); ok {
+						thoughtSig, _ = google["thought_signature"].(string)
+						if thoughtSig == "" {
+							thoughtSig, _ = google["thoughtSignature"].(string)
+						}
+					}
+				}
+			}
+			if thoughtSig == "" && lookupSig != nil {
+				thoughtSig = lookupSig(cid)
+			}
 			calls = append(calls, model.ChatToolCall{
-				ID:   cid,
-				Type: "function",
-				Function: model.ChatFunction{Name: name, Arguments: args},
+				ID:               cid,
+				Type:             "function",
+				Function:         model.ChatFunction{Name: name, Arguments: args},
+				ThoughtSignature: thoughtSig,
 			})
 		}
 		messages = append(messages, model.ChatMessage{
@@ -157,16 +172,26 @@ func ChatToResponses(chat *model.ChatResponse, defaultModel, respID string) *mod
 		var items []model.ResponseOutputItem
 
 		if txt, ok := msg.Content.(string); ok && txt != "" {
+			var content []model.ContentBlock
+			if msg.ReasoningContent != "" {
+				content = append(content, model.ContentBlock{
+					Type: "reasoning",
+					Reasoning: map[string]interface{}{
+						"content": msg.ReasoningContent,
+					},
+				})
+			}
+			content = append(content, model.ContentBlock{
+				Type:        "output_text",
+				Text:        txt,
+				Annotations: []interface{}{},
+			})
 			items = append(items, model.ResponseOutputItem{
-				ID:     model.MakeID(),
-				Type:   "message",
-				Role:   "assistant",
-				Status: "completed",
-				Content: []model.ContentBlock{{
-					Type:        "output_text",
-					Text:        txt,
-					Annotations: []interface{}{},
-				}},
+				ID:      model.MakeID(),
+				Type:    "message",
+				Role:    "assistant",
+				Status:  "completed",
+				Content: content,
 			})
 		}
 
@@ -175,12 +200,13 @@ func ChatToResponses(chat *model.ChatResponse, defaultModel, respID string) *mod
 				continue
 			}
 			items = append(items, model.ResponseOutputItem{
-				ID:        tc.ID,
-				Type:      "function_call",
-				CallID:    tc.ID,
-				Name:      tc.Function.Name,
-				Arguments: tc.Function.Arguments,
-				Status:    "completed",
+				ID:               tc.ID,
+				Type:             "function_call",
+				CallID:           tc.ID,
+				Name:             tc.Function.Name,
+				Arguments:        tc.Function.Arguments,
+				Status:           "completed",
+				ThoughtSignature: tc.ThoughtSignature,
 			})
 		}
 

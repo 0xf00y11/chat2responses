@@ -66,6 +66,8 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	slog.Info("raw request body", "body", string(body))
+
 	var req model.ResponsesRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		slog.Error("parse request", "error", err)
@@ -80,7 +82,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	respID := model.MakeID()
 
 	// Build messages from this request
-	newMessages := proxy.InputToMessages(&req)
+	newMessages := proxy.InputToMessages(&req, s.session.FindThoughtSignature)
 
 	// Look up previous session to reconstruct the full conversation
 	var fullMessages []model.ChatMessage

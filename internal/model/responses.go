@@ -11,19 +11,19 @@ import (
 )
 
 type ResponsesRequest struct {
-	Model              string           `json:"model"`
-	Input              json.RawMessage  `json:"input"`
-	Instructions        string           `json:"instructions,omitempty"`
-	MaxOutputTokens    int              `json:"max_output_tokens,omitempty"`
-	Stream             bool             `json:"stream,omitempty"`
-	Temperature        *float64         `json:"temperature,omitempty"`
-	TopP               *float64         `json:"top_p,omitempty"`
-	Tools              []ResponseTool   `json:"tools,omitempty"`
-	ToolChoice         interface{}      `json:"tool_choice,omitempty"`
-	ParallelToolCalls  *bool            `json:"parallel_tool_calls,omitempty"`
+	Model              string            `json:"model"`
+	Input              json.RawMessage   `json:"input"`
+	Instructions       string            `json:"instructions,omitempty"`
+	MaxOutputTokens    int               `json:"max_output_tokens,omitempty"`
+	Stream             bool              `json:"stream,omitempty"`
+	Temperature        *float64          `json:"temperature,omitempty"`
+	TopP               *float64          `json:"top_p,omitempty"`
+	Tools              []ResponseTool    `json:"tools,omitempty"`
+	ToolChoice         interface{}       `json:"tool_choice,omitempty"`
+	ParallelToolCalls  *bool             `json:"parallel_tool_calls,omitempty"`
 	Metadata           map[string]string `json:"metadata,omitempty"`
 	Store              *bool             `json:"store,omitempty"`
-	PreviousResponseID string           `json:"previous_response_id,omitempty"`
+	PreviousResponseID string            `json:"previous_response_id,omitempty"`
 }
 
 type ResponseTool struct {
@@ -35,30 +35,32 @@ type ResponseTool struct {
 }
 
 type ResponsesResponse struct {
-	ID      string              `json:"id"`
-	Object  string              `json:"object"`
-	Created int64               `json:"created_at"`
-	Status  string              `json:"status"`
-	Model   string              `json:"model"`
+	ID      string               `json:"id"`
+	Object  string               `json:"object"`
+	Created int64                `json:"created_at"`
+	Status  string               `json:"status"`
+	Model   string               `json:"model"`
 	Output  []ResponseOutputItem `json:"output"`
-	Usage   *Usage              `json:"usage,omitempty"`
+	Usage   *Usage               `json:"usage,omitempty"`
 }
 
 type ResponseOutputItem struct {
-	ID        string         `json:"id"`
-	Type      string         `json:"type"`
-	Role      string         `json:"role,omitempty"`
-	Status    string         `json:"status,omitempty"`
-	Content   []ContentBlock `json:"content,omitempty"`
-	CallID    string         `json:"call_id,omitempty"`
-	Name      string         `json:"name,omitempty"`
-	Arguments string         `json:"arguments,omitempty"`
+	ID               string         `json:"id"`
+	Type             string         `json:"type"`
+	Role             string         `json:"role,omitempty"`
+	Status           string         `json:"status,omitempty"`
+	Content          []ContentBlock `json:"content,omitempty"`
+	CallID           string         `json:"call_id,omitempty"`
+	Name             string         `json:"name,omitempty"`
+	Arguments        string         `json:"arguments,omitempty"`
+	ThoughtSignature string         `json:"thought_signature,omitempty"`
 }
 
 type ContentBlock struct {
-	Type        string        `json:"type"`
-	Text        string        `json:"text,omitempty"`
-	Annotations []interface{} `json:"annotations,omitempty"`
+	Type        string                 `json:"type"`
+	Text        string                 `json:"text,omitempty"`
+	Annotations []interface{}          `json:"annotations,omitempty"`
+	Reasoning   map[string]interface{} `json:"reasoning,omitempty"`
 }
 
 type Usage struct {
@@ -74,4 +76,3 @@ func MakeID(prefix ...string) string {
 	}
 	return fmt.Sprintf("%s_%x", p, time.Now().UnixNano())
 }
-

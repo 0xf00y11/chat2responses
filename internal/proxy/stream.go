@@ -5,23 +5,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 
 	"chat2responses/internal/model"
 )
 
 type toolCallBuilder struct {
-	Index int
-	ID    string
-	Name  string
-	Args  strings.Builder
+	Index            int
+	ID               string
+	Name             string
+	Args             strings.Builder
+	ThoughtSignature string
 }
 
 type StreamConverter struct {
 	model              string
 	respID             string
 	collectedText      strings.Builder
+	collectedReasoning strings.Builder
 	collectedToolCalls []model.ChatToolCall
+	reasoningStarted   bool
+	textStarted        bool
 }
 
 func NewStreamConverter(model, respID string) *StreamConverter {
@@ -48,6 +53,7 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 	var tcBuilders []*toolCallBuilder
 
 	msgID := model.MakeID()
+	partIndex := 0
 
 	sendEvent := func(evt interface{}) error {
 		data, err := json.Marshal(evt)
@@ -81,17 +87,48 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 		},
 	})
 
-	sendEvent(map[string]interface{}{
-		"type":         "response.content_part.added",
-		"item_id":      msgID,
-		"output_index": 0,
-		"part_index":   0,
-		"part": map[string]interface{}{
-			"type":        "output_text",
-			"text":        "",
-			"annotations": []interface{}{},
-		},
-	})
+	// beginReasoning sends a content_part.added for a reasoning block (once)
+	beginReasoning := func() {
+		if sc.reasoningStarted {
+			return
+		}
+		sc.reasoningStarted = true
+		sendEvent(map[string]interface{}{
+			"type":         "response.content_part.added",
+			"item_id":      msgID,
+			"output_index": 0,
+			"part_index":   partIndex,
+			"part": map[string]interface{}{
+				"type": "reasoning",
+				"reasoning": map[string]interface{}{
+					"content": "",
+				},
+			},
+		})
+	}
+
+	// beginText sends a content_part.added for an output_text block (once)
+	beginText := func() {
+		if sc.textStarted {
+			return
+		}
+		sc.textStarted = true
+		// If reasoning was already started, increment part index
+		if sc.reasoningStarted {
+			partIndex = 1
+		}
+		sendEvent(map[string]interface{}{
+			"type":         "response.content_part.added",
+			"item_id":      msgID,
+			"output_index": 0,
+			"part_index":   partIndex,
+			"part": map[string]interface{}{
+				"type":        "output_text",
+				"text":        "",
+				"annotations": []interface{}{},
+			},
+		})
+	}
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -103,6 +140,8 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 		if data == "[DONE]" {
 			break
 		}
+
+		slog.Info("upstream stream chunk", "data", data)
 
 		var chunk map[string]interface{}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
@@ -133,19 +172,10 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 			usageData = u
 		}
 
-		// Content delta
-		if content, ok := delta["content"].(string); ok && content != "" {
-			sc.collectedText.WriteString(content)
-			sendEvent(map[string]interface{}{
-				"type":         "response.output_text.delta",
-				"item_id":      msgID,
-				"output_index": 0,
-				"delta":        content,
-			})
-		}
-
-		// Reasoning content
+		// Reasoning content — must start before any text content
 		if reasoning, ok := delta["reasoning_content"].(string); ok && reasoning != "" {
+			beginReasoning()
+			sc.collectedReasoning.WriteString(reasoning)
 			sendEvent(map[string]interface{}{
 				"type":         "response.reasoning.delta",
 				"item_id":      msgID,
@@ -153,6 +183,18 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 				"delta": map[string]interface{}{
 					"content": reasoning,
 				},
+			})
+		}
+
+		// Content delta
+		if content, ok := delta["content"].(string); ok && content != "" {
+			beginText()
+			sc.collectedText.WriteString(content)
+			sendEvent(map[string]interface{}{
+				"type":         "response.output_text.delta",
+				"item_id":      msgID,
+				"output_index": 0,
+				"delta":        content,
 			})
 		}
 
@@ -234,6 +276,39 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 						builder.Name = name
 					}
 				}
+				if ts, ok := tc["thought_signature"].(string); ok && ts != "" {
+					builder.ThoughtSignature = ts
+				} else if ts, ok := tc["thoughtSignature"].(string); ok && ts != "" {
+					builder.ThoughtSignature = ts
+				} else if ec, ok := tc["extra_content"].(map[string]interface{}); ok {
+					if google, ok := ec["google"].(map[string]interface{}); ok {
+						if ts, ok := google["thought_signature"].(string); ok && ts != "" {
+							builder.ThoughtSignature = ts
+						} else if ts, ok := google["thoughtSignature"].(string); ok && ts != "" {
+							builder.ThoughtSignature = ts
+						}
+					}
+				} else if ec, ok := tc["extraContent"].(map[string]interface{}); ok {
+					if google, ok := ec["google"].(map[string]interface{}); ok {
+						if ts, ok := google["thought_signature"].(string); ok && ts != "" {
+							builder.ThoughtSignature = ts
+						} else if ts, ok := google["thoughtSignature"].(string); ok && ts != "" {
+							builder.ThoughtSignature = ts
+						}
+					}
+				} else if google, ok := tc["google"].(map[string]interface{}); ok {
+					if ts, ok := google["thought_signature"].(string); ok && ts != "" {
+						builder.ThoughtSignature = ts
+					} else if ts, ok := google["thoughtSignature"].(string); ok && ts != "" {
+						builder.ThoughtSignature = ts
+					}
+				} else if fn, ok := tc["function"].(map[string]interface{}); ok {
+					if ts, ok := fn["thought_signature"].(string); ok && ts != "" {
+						builder.ThoughtSignature = ts
+					} else if ts, ok := fn["thoughtSignature"].(string); ok && ts != "" {
+						builder.ThoughtSignature = ts
+					}
+				}
 			}
 		}
 	}
@@ -242,20 +317,52 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 		return fmt.Errorf("scanner: %w", err)
 	}
 
-	// content_part.done
-	if sc.collectedText.Len() > 0 {
+	// Build content blocks for the done events
+	var contentBlocks []interface{}
+
+	// Reasoning block done
+	reasoningText := sc.collectedReasoning.String()
+	if reasoningText != "" {
+		block := map[string]interface{}{
+			"type": "reasoning",
+			"reasoning": map[string]interface{}{
+				"content": reasoningText,
+			},
+		}
+		contentBlocks = append(contentBlocks, block)
 		sendEvent(map[string]interface{}{
 			"type":         "response.content_part.done",
 			"item_id":      msgID,
 			"output_index": 0,
 			"part_index":   0,
-			"part": map[string]interface{}{
-				"type":        "output_text",
-				"text":        sc.collectedText.String(),
-				"annotations": []interface{}{},
-			},
+			"part":         block,
 		})
+	}
 
+	// Output text block done
+	collectedText := sc.collectedText.String()
+	if collectedText != "" {
+		block := map[string]interface{}{
+			"type":        "output_text",
+			"text":        collectedText,
+			"annotations": []interface{}{},
+		}
+		contentBlocks = append(contentBlocks, block)
+		textPartIndex := 0
+		if sc.reasoningStarted {
+			textPartIndex = 1
+		}
+		sendEvent(map[string]interface{}{
+			"type":         "response.content_part.done",
+			"item_id":      msgID,
+			"output_index": 0,
+			"part_index":   textPartIndex,
+			"part":         block,
+		})
+	}
+
+	// output_item.done for message (only if there were content blocks)
+	if len(contentBlocks) > 0 {
 		sendEvent(map[string]interface{}{
 			"type":         "response.output_item.done",
 			"output_index": 0,
@@ -264,11 +371,7 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 				"type":    "message",
 				"role":    "assistant",
 				"status":  "completed",
-				"content": []interface{}{map[string]interface{}{
-					"type":        "output_text",
-					"text":        sc.collectedText.String(),
-					"annotations": []interface{}{},
-				}},
+				"content": contentBlocks,
 			},
 		})
 	}
@@ -282,17 +385,21 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 			"output_index": 1,
 			"arguments":    args,
 		})
+		itemMap := map[string]interface{}{
+			"id":        builder.ID,
+			"type":      "function_call",
+			"call_id":   builder.ID,
+			"name":      builder.Name,
+			"arguments": args,
+			"status":    "completed",
+		}
+		if builder.ThoughtSignature != "" {
+			itemMap["thought_signature"] = builder.ThoughtSignature
+		}
 		sendEvent(map[string]interface{}{
 			"type":         "response.output_item.done",
 			"output_index": 1,
-			"item": map[string]interface{}{
-				"id":        builder.ID,
-				"type":      "function_call",
-				"call_id":   builder.ID,
-				"name":      builder.Name,
-				"arguments": args,
-				"status":    "completed",
-			},
+			"item":         itemMap,
 		})
 
 		sc.collectedToolCalls = append(sc.collectedToolCalls, model.ChatToolCall{
@@ -302,33 +409,34 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 				Name:      builder.Name,
 				Arguments: args,
 			},
+			ThoughtSignature: builder.ThoughtSignature,
 		})
 	}
 
-	// Build output items
+	// Build output items for response.completed
 	var outputItems []interface{}
-	if sc.collectedText.Len() > 0 {
+	if len(contentBlocks) > 0 {
 		outputItems = append(outputItems, map[string]interface{}{
 			"id":      msgID,
 			"type":    "message",
 			"role":    "assistant",
 			"status":  "completed",
-			"content": []interface{}{map[string]interface{}{
-				"type":        "output_text",
-				"text":        sc.collectedText.String(),
-				"annotations": []interface{}{},
-			}},
+			"content": contentBlocks,
 		})
 	}
 	for _, builder := range tcBuilders {
-		outputItems = append(outputItems, map[string]interface{}{
+		itemMap := map[string]interface{}{
 			"id":        builder.ID,
 			"type":      "function_call",
 			"call_id":   builder.ID,
 			"name":      builder.Name,
 			"arguments": builder.Args.String(),
 			"status":    "completed",
-		})
+		}
+		if builder.ThoughtSignature != "" {
+			itemMap["thought_signature"] = builder.ThoughtSignature
+		}
+		outputItems = append(outputItems, itemMap)
 	}
 
 	// response.completed

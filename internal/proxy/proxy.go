@@ -115,4 +115,3 @@ func (c *UpstreamClient) ListModels() ([]byte, error) {
 	defer resp.Body.Close()
 	return io.ReadAll(resp.Body)
 }
-

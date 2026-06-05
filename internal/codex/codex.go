@@ -145,7 +145,6 @@ func Status() (string, error) {
 	return status, nil
 }
 
-
 func IsConfigured() bool {
 	path, err := configPath()
 	if err != nil {
@@ -154,4 +153,3 @@ func IsConfigured() bool {
 	_, err = os.Stat(path)
 	return err == nil
 }
-

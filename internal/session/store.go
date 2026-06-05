@@ -1,6 +1,7 @@
 package session
 
 import (
+	"log/slog"
 	"sync"
 	"time"
 
@@ -50,6 +51,25 @@ func (s *Store) Set(respID string, history []model.ChatMessage) {
 		Messages:  history,
 		CreatedAt: time.Now(),
 	}
+}
+
+func (s *Store) FindThoughtSignature(callID string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	slog.Info("FindThoughtSignature searching", "target_call_id", callID)
+	for sessID, sess := range s.sessions {
+		for _, msg := range sess.Messages {
+			for _, tc := range msg.ToolCalls {
+				slog.Info("FindThoughtSignature checking", "sess_id", sessID, "tc_id", tc.ID, "has_sig", tc.ThoughtSignature != "")
+				if tc.ID == callID && tc.ThoughtSignature != "" {
+					slog.Info("FindThoughtSignature FOUND", "call_id", callID)
+					return tc.ThoughtSignature
+				}
+			}
+		}
+	}
+	slog.Warn("FindThoughtSignature NOT FOUND", "call_id", callID)
+	return ""
 }
 
 func (s *Store) cleanupLoop() {
