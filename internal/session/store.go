@@ -56,11 +56,11 @@ func (s *Store) Set(respID string, history []model.ChatMessage) {
 func (s *Store) FindThoughtSignature(callID string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	slog.Info("FindThoughtSignature searching", "target_call_id", callID)
+	slog.Debug("FindThoughtSignature searching", "target_call_id", callID)
 	for sessID, sess := range s.sessions {
 		for _, msg := range sess.Messages {
 			for _, tc := range msg.ToolCalls {
-				slog.Info("FindThoughtSignature checking", "sess_id", sessID, "tc_id", tc.ID, "has_sig", tc.ThoughtSignature != "")
+				slog.Debug("FindThoughtSignature checking", "sess_id", sessID, "tc_id", tc.ID, "has_sig", tc.ThoughtSignature != "")
 				if tc.ID == callID && tc.ThoughtSignature != "" {
 					slog.Info("FindThoughtSignature FOUND", "call_id", callID)
 					return tc.ThoughtSignature
@@ -68,7 +68,7 @@ func (s *Store) FindThoughtSignature(callID string) string {
 			}
 		}
 	}
-	slog.Warn("FindThoughtSignature NOT FOUND", "call_id", callID)
+	slog.Debug("FindThoughtSignature NOT FOUND", "call_id", callID)
 	return ""
 }
 

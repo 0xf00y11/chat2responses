@@ -11,6 +11,10 @@ import (
 	"chat2responses/internal/model"
 )
 
+// codex: max-lines(490)
+// Note: This file is paired with internal/proxy/converter.go. Any changes to reasoning
+// content or tool call parsing must be synchronized between both files.
+
 type toolCallBuilder struct {
 	Index            int
 	ID               string
@@ -37,6 +41,10 @@ func (sc *StreamConverter) CollectedText() string {
 	return sc.collectedText.String()
 }
 
+func (sc *StreamConverter) CollectedReasoning() string {
+	return sc.collectedReasoning.String()
+}
+
 func (sc *StreamConverter) CollectedToolCalls() []model.ChatToolCall {
 	return sc.collectedToolCalls
 }
@@ -46,7 +54,7 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 
 	scanner := bufio.NewScanner(upstream)
 	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
+	scanner.Buffer(buf, 10*1024*1024) // 10MB buffer to handle extra long chunks/reasoning without crashing
 
 	var currentModel string
 	var usageData map[string]interface{}
@@ -55,13 +63,21 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 	msgID := model.MakeID()
 	partIndex := 0
 
+	var lastWriteErr error
 	sendEvent := func(evt interface{}) error {
+		if lastWriteErr != nil {
+			return lastWriteErr
+		}
 		data, err := json.Marshal(evt)
 		if err != nil {
 			return err
 		}
 		_, err = fmt.Fprintf(w, "data: %s\n\n", data)
-		return err
+		if err != nil {
+			lastWriteErr = err
+			return err
+		}
+		return nil
 	}
 
 	// Send initial response.created event
@@ -141,7 +157,7 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 			break
 		}
 
-		slog.Info("upstream stream chunk", "data", data)
+		slog.Debug("upstream stream chunk", "data", data) // Debug level to avoid log spam
 
 		var chunk map[string]interface{}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
@@ -310,6 +326,11 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 					}
 				}
 			}
+		}
+
+		if lastWriteErr != nil {
+			slog.Warn("client disconnected; stopping stream early", "error", lastWriteErr)
+			break
 		}
 	}
 

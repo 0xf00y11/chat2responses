@@ -66,7 +66,8 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("raw request body", "body", string(body))
+	// Downgraded to Debug to protect sensitive credentials/prompt leakage (Finding 5)
+	slog.Debug("raw request body", "body", string(body))
 
 	var req model.ResponsesRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -208,12 +209,16 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Store session: existing history + new user input + assistant response
-		assistantMsg := model.ChatMessage{Role: "assistant", Content: result.CollectedText()}
+		assistantMsg := model.ChatMessage{
+			Role:             "assistant",
+			Content:          result.CollectedText(),
+			ReasoningContent: result.CollectedReasoning(), // Preserve thinking chain (Finding 1)
+		}
 		fullWithResponse := append(fullMessages, assistantMsg)
 		if result.CollectedToolCalls() != nil {
 			fullWithResponse[len(fullWithResponse)-1].ToolCalls = result.CollectedToolCalls()
 		}
-		if result.CollectedText() != "" || len(result.CollectedToolCalls()) > 0 {
+		if result.CollectedText() != "" || result.CollectedReasoning() != "" || len(result.CollectedToolCalls()) > 0 {
 			s.session.Set(respID, fullWithResponse)
 		}
 

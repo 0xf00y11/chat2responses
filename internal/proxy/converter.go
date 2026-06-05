@@ -8,6 +8,9 @@ import (
 	"chat2responses/internal/model"
 )
 
+// Note: This file is paired with internal/proxy/stream.go. Any changes to reasoning
+// content or tool call parsing must be synchronized between both files.
+
 // InputToMessages converts a Responses API input payload into Chat Completions messages.
 // It does NOT handle instructions (handled by the session-aware server layer).
 func InputToMessages(body *model.ResponsesRequest, lookupSig func(string) string) []model.ChatMessage {
