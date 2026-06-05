@@ -6,8 +6,10 @@ package codex
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const (
@@ -152,4 +154,64 @@ func IsConfigured() bool {
 	}
 	_, err = os.Stat(path)
 	return err == nil
+}
+
+// AutoCheckAndFix automatically verifies whether the Codex CLI config is correct
+// and matches the current proxy's port and model, correcting it if it is incorrect.
+func AutoCheckAndFix(serverPort int, currentModel string, apiKey string) error {
+	path, err := configPath()
+	if err != nil {
+		return err
+	}
+
+	expectedBaseURL := fmt.Sprintf("http://127.0.0.1:%d", serverPort)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			slog.Info("Codex CLI configuration not found. Automatically setting up a correct one...", "path", path)
+			return Setup(SetupConfig{
+				Model:   currentModel,
+				BaseURL: expectedBaseURL,
+				APIKey:  apiKey,
+				WireAPI: "responses",
+			})
+		}
+		return fmt.Errorf("read codex config: %w", err)
+	}
+
+	content := string(data)
+
+	// Build exact expected line patterns to assert correctness
+	expectedProvider := `model_provider = "chat2responses"`
+	expectedBaseURLLine1 := fmt.Sprintf(`base_url = "http://127.0.0.1:%d/v1"`, serverPort)
+	expectedBaseURLLine2 := fmt.Sprintf(`base_url = "http://localhost:%d/v1"`, serverPort)
+	expectedModelLine := fmt.Sprintf(`model = "%s"`, currentModel)
+
+	needsFix := false
+	if !strings.Contains(content, expectedProvider) {
+		needsFix = true
+		slog.Warn("Codex CLI config check: model_provider is not set to chat2responses")
+	}
+	if !strings.Contains(content, expectedBaseURLLine1) && !strings.Contains(content, expectedBaseURLLine2) {
+		needsFix = true
+		slog.Warn("Codex CLI config check: base_url does not match expected server port", "port", serverPort)
+	}
+	if !strings.Contains(content, expectedModelLine) {
+		needsFix = true
+		slog.Warn("Codex CLI config check: model does not match", "expected", currentModel)
+	}
+
+	if needsFix {
+		slog.Info("Updating Codex CLI configuration to match current proxy server settings...", "path", path)
+		return Setup(SetupConfig{
+			Model:   currentModel,
+			BaseURL: expectedBaseURL,
+			APIKey:  apiKey,
+			WireAPI: "responses",
+		})
+	}
+
+	slog.Info("Codex CLI configuration is correct and verified", "path", path)
+	return nil
 }

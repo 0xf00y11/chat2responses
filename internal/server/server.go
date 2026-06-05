@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"chat2responses/internal/codex"
 	"chat2responses/internal/config"
 	"chat2responses/internal/model"
 	"chat2responses/internal/proxy"
@@ -264,6 +265,11 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 }
 
 func Run(cfg *config.Config) {
+	// Automatically check and align Codex CLI's config before starting the server
+	if err := codex.AutoCheckAndFix(cfg.Server.Port, cfg.Model.DefaultModel, cfg.Upstream.APIKey); err != nil {
+		slog.Warn("Failed to automatically verify or correct Codex CLI configuration", "error", err)
+	}
+
 	s := New(cfg)
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	slog.Info("starting chat2responses",
