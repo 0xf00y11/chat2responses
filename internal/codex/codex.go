@@ -65,6 +65,7 @@ model = "%s"
 model_provider = "chat2responses"
 
 [model_providers.chat2responses]
+name = "chat2responses"
 base_url = "%s/v1"
 env_key = "CODEX_API_KEY"
 wire_api = "%s"
@@ -164,15 +165,13 @@ func AutoCheckAndFix(serverPort int, currentModel string, apiKey string) error {
 		return err
 	}
 
-	expectedBaseURL := fmt.Sprintf("http://127.0.0.1:%d", serverPort)
-
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			slog.Info("Codex CLI configuration not found. Automatically setting up a correct one...", "path", path)
 			return Setup(SetupConfig{
 				Model:   currentModel,
-				BaseURL: expectedBaseURL,
+				BaseURL: fmt.Sprintf("http://127.0.0.1:%d", serverPort),
 				APIKey:  apiKey,
 				WireAPI: "responses",
 			})
@@ -182,36 +181,160 @@ func AutoCheckAndFix(serverPort int, currentModel string, apiKey string) error {
 
 	content := string(data)
 
-	// Build exact expected line patterns to assert correctness
-	expectedProvider := `model_provider = "chat2responses"`
-	expectedBaseURLLine1 := fmt.Sprintf(`base_url = "http://127.0.0.1:%d/v1"`, serverPort)
-	expectedBaseURLLine2 := fmt.Sprintf(`base_url = "http://localhost:%d/v1"`, serverPort)
-	expectedModelLine := fmt.Sprintf(`model = "%s"`, currentModel)
+	// Safe TOML extraction
+	provider, baseURL, model := parseCurrentProviderAndBaseURL(content)
 
-	needsFix := false
-	if !strings.Contains(content, expectedProvider) {
-		needsFix = true
-		slog.Warn("Codex CLI config check: model_provider is not set to chat2responses")
-	}
-	if !strings.Contains(content, expectedBaseURLLine1) && !strings.Contains(content, expectedBaseURLLine2) {
-		needsFix = true
-		slog.Warn("Codex CLI config check: base_url does not match expected server port", "port", serverPort)
-	}
-	if !strings.Contains(content, expectedModelLine) {
-		needsFix = true
-		slog.Warn("Codex CLI config check: model does not match", "expected", currentModel)
+	// Validate if it is already pointing to our proxy
+	isExpectedBaseURL := false
+	expectedBaseURLLine1 := fmt.Sprintf("http://127.0.0.1:%d/v1", serverPort)
+	expectedBaseURLLine2 := fmt.Sprintf("http://localhost:%d/v1", serverPort)
+	if baseURL == expectedBaseURLLine1 || baseURL == expectedBaseURLLine2 {
+		isExpectedBaseURL = true
 	}
 
-	if needsFix {
-		slog.Info("Updating Codex CLI configuration to match current proxy server settings...", "path", path)
-		return Setup(SetupConfig{
-			Model:   currentModel,
-			BaseURL: expectedBaseURL,
-			APIKey:  apiKey,
-			WireAPI: "responses",
-		})
+	if provider != "" && isExpectedBaseURL && model == currentModel {
+		slog.Info("Codex CLI configuration is correct and verified", "path", path)
+		return nil
 	}
 
-	slog.Info("Codex CLI configuration is correct and verified", "path", path)
+	slog.Warn("Codex CLI config mismatch. Performing non-destructive auto-heal...",
+		"path", path,
+		"current_provider", provider,
+		"current_base_url", baseURL,
+		"current_model", model,
+	)
+
+	// Perform backup before modification
+	backup := path + backupSuffix
+	if err := os.WriteFile(backup, data, 0644); err != nil {
+		slog.Warn("Failed to create backup of Codex configuration", "error", err)
+	} else {
+		slog.Info("Backed up existing config", "path", backup)
+	}
+
+	// Non-destructive update
+	newContent := nonDestructiveUpdate(content, serverPort, currentModel)
+
+	if err := os.WriteFile(path, []byte(newContent), 0644); err != nil {
+		return fmt.Errorf("write updated codex config: %w", err)
+	}
+
+	slog.Info("Successfully performed non-destructive auto-heal on Codex config", "path", path)
 	return nil
+}
+
+func parseCurrentProviderAndBaseURL(content string) (provider string, baseURL string, model string) {
+	lines := strings.Split(content, "\n")
+	
+	// First pass: find active provider and model
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "model_provider") {
+			parts := strings.SplitN(line, "=", 2)
+			if len(parts) == 2 {
+				provider = strings.Trim(strings.TrimSpace(parts[1]), `"'`)
+			}
+		}
+		if strings.HasPrefix(line, "model") && !strings.Contains(line, "_provider") && !strings.Contains(line, "_reasoning") {
+			parts := strings.SplitN(line, "=", 2)
+			if len(parts) == 2 {
+				model = strings.Trim(strings.TrimSpace(parts[1]), `"'`)
+			}
+		}
+	}
+	
+	if provider == "" {
+		return "", "", model
+	}
+	
+	// Second pass: find base_url for that provider
+	inTargetProvider := false
+	targetHeader := fmt.Sprintf("[model_providers.%s]", provider)
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			if trimmed == targetHeader {
+				inTargetProvider = true
+			} else {
+				inTargetProvider = false
+			}
+			continue
+		}
+		if inTargetProvider && strings.HasPrefix(trimmed, "base_url") {
+			parts := strings.SplitN(trimmed, "=", 2)
+			if len(parts) == 2 {
+				baseURL = strings.Trim(strings.TrimSpace(parts[1]), `"'`)
+				break
+			}
+		}
+	}
+	
+	return provider, baseURL, model
+}
+
+func nonDestructiveUpdate(content string, serverPort int, currentModel string) string {
+	lines := strings.Split(content, "\n")
+	hasModelProvider := false
+	hasModel := false
+	
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "model_provider") {
+			lines[i] = `model_provider = "chat2responses"`
+			hasModelProvider = true
+		} else if strings.HasPrefix(trimmed, "model") && !strings.Contains(trimmed, "_provider") && !strings.Contains(trimmed, "_reasoning") {
+			lines[i] = fmt.Sprintf(`model = "%s"`, currentModel)
+			hasModel = true
+		}
+	}
+	
+	newContent := strings.Join(lines, "\n")
+	if !hasModelProvider {
+		newContent = `model_provider = "chat2responses"` + "\n" + newContent
+	}
+	if !hasModel {
+		newContent = fmt.Sprintf(`model = "%s"`, currentModel) + "\n" + newContent
+	}
+	
+	// Check if [model_providers.chat2responses] block exists
+	targetHeader := "[model_providers.chat2responses]"
+	if !strings.Contains(newContent, targetHeader) {
+		// Append the block at the end
+		newContent = strings.TrimSpace(newContent) + "\n\n" + fmt.Sprintf(`[model_providers.chat2responses]
+name = "chat2responses"
+base_url = "http://127.0.0.1:%d/v1"
+env_key = "CODEX_API_KEY"
+wire_api = "responses"
+`, serverPort)
+	} else {
+		// Update the base_url and name inside the existing [model_providers.chat2responses] block
+		lines = strings.Split(newContent, "\n")
+		inBlock := false
+		for i, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+				if trimmed == targetHeader {
+					inBlock = true
+				} else {
+					inBlock = false
+				}
+				continue
+			}
+			if inBlock && strings.HasPrefix(trimmed, "base_url") {
+				lines[i] = fmt.Sprintf(`base_url = "http://127.0.0.1:%d/v1"`, serverPort)
+			}
+			if inBlock && strings.HasPrefix(trimmed, "name") {
+				lines[i] = `name = "chat2responses"`
+			}
+		}
+		newContent = strings.Join(lines, "\n")
+	}
+	
+	return newContent
 }

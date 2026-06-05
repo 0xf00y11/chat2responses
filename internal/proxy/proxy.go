@@ -29,9 +29,6 @@ func NewUpstreamClient(baseURL, apiKey, defModel string) *UpstreamClient {
 		defModel: defModel,
 		http: &http.Client{
 			Timeout: 300 * time.Second,
-			Transport: &http.Transport{
-				ResponseHeaderTimeout: 30 * time.Second,
-			},
 		},
 	}
 }
