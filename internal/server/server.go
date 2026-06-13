@@ -122,25 +122,25 @@ func (s *Server) getClientForModel(modelName string) (*proxy.UpstreamClient, str
 	return s.client, actualModel
 }
 
+// handleModels - 关键安全重构：只输出用户自己配置的、高可用的专属模型，不再混杂上游官方无关的百余个冗余模型，保持极简和 100% 自主性
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	var models []map[string]interface{}
-	if data, err := s.client.ListModels(); err == nil {
-		var resp struct {
-			Data []map[string]interface{} `json:"data"`
-		}
-		if json.Unmarshal(data, &resp) == nil && len(resp.Data) > 0 {
-			models = resp.Data
-		}
-	}
-
-	// 保证我们所有在 Models 配置中自定义的模型也列在其中
 	modelIDs := make(map[string]bool)
-	for _, m := range models {
-		if id, ok := m["id"].(string); ok {
-			modelIDs[id] = true
-		}
-	}
 
+	// 1. 首要放入：当前用户设置的全局默认模型
+	defModel := s.cfg.Model.DefaultModel
+	if defModel == "" {
+		defModel = "gpt-4o"
+	}
+	models = append(models, map[string]interface{}{
+		"id":       defModel,
+		"object":   "model",
+		"created":  time.Now().Unix(),
+		"owned_by": "chat2responses",
+	})
+	modelIDs[defModel] = true
+
+	// 2. 依次放入：用户在 models 映射中自定义配置的所有专属模型
 	if s.cfg.Models != nil {
 		for mID := range s.cfg.Models {
 			if !modelIDs[mID] {
@@ -150,22 +150,12 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 					"created":  time.Now().Unix(),
 					"owned_by": "chat2responses",
 				})
+				modelIDs[mID] = true
 			}
 		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if len(models) == 0 {
-		models = []map[string]interface{}{
-			{
-				"id":       s.cfg.Model.DefaultModel,
-				"object":   "model",
-				"created":  time.Now().Unix(),
-				"owned_by": "chat2responses",
-			},
-		}
-	}
-
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"object": "list",
 		"data":   models,
