@@ -162,7 +162,9 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// parseModelCommand - 检测并提取用户发送的 "/model" 或 "/model <model_name>" 动态切换指令
+// parseModelCommand - 检测并提取用户发送的切换指令
+// 为了彻底绕过 Codex CLI/TUI 等客户端本地拦截以 "/" 开头的未知指令，
+// 本函数同时完美支持 "!", "#", ":" 以及传统的 "/" 作为命令前缀。
 func parseModelCommand(messages []model.ChatMessage) (cmdType string, param string, isCmd bool) {
 	if len(messages) == 0 {
 		return "", "", false
@@ -171,20 +173,67 @@ func parseModelCommand(messages []model.ChatMessage) (cmdType string, param stri
 	if lastMsg.Role != "user" {
 		return "", "", false
 	}
-	contentStr, ok := lastMsg.Content.(string)
-	if !ok {
-		return "", "", false
+
+	var contentStr string
+	switch v := lastMsg.Content.(type) {
+	case string:
+		contentStr = v
+	case []interface{}:
+		// 遍历提取文本内容
+		var parts []string
+		for _, p := range v {
+			if m, ok := p.(map[string]interface{}); ok {
+				if txt, ok := m["text"].(string); ok {
+					parts = append(parts, txt)
+				}
+			} else if s, ok := p.(string); ok {
+				parts = append(parts, s)
+			}
+		}
+		contentStr = strings.Join(parts, "\n")
+	default:
+		contentStr = fmt.Sprintf("%v", lastMsg.Content)
 	}
+
 	trimmed := strings.TrimSpace(contentStr)
-	if trimmed == "/model" {
+	prefixes := []string{"!", "#", ":", "/"}
+
+	// 1. 判断是否是显示列表指令
+	isList := false
+	for _, pref := range prefixes {
+		if trimmed == pref+"switch" || trimmed == pref+"use" || trimmed == pref+"model" {
+			isList = true
+			break
+		}
+	}
+	if isList {
 		return "list", "", true
 	}
-	if strings.HasPrefix(trimmed, "/model ") {
-		modelName := strings.TrimSpace(strings.TrimPrefix(trimmed, "/model "))
-		if modelName == "" {
+
+	// 2. 判断是否是切换模型指令
+	var targetModel string
+	isSwitch := false
+	for _, pref := range prefixes {
+		if strings.HasPrefix(trimmed, pref+"switch ") {
+			targetModel = strings.TrimSpace(strings.TrimPrefix(trimmed, pref+"switch "))
+			isSwitch = true
+			break
+		} else if strings.HasPrefix(trimmed, pref+"use ") {
+			targetModel = strings.TrimSpace(strings.TrimPrefix(trimmed, pref+"use "))
+			isSwitch = true
+			break
+		} else if strings.HasPrefix(trimmed, pref+"model ") {
+			targetModel = strings.TrimSpace(strings.TrimPrefix(trimmed, pref+"model "))
+			isSwitch = true
+			break
+		}
+	}
+
+	if isSwitch {
+		if targetModel == "" {
 			return "list", "", true
 		}
-		return "switch", modelName, true
+		return "switch", targetModel, true
 	}
 	return "", "", false
 }
@@ -392,7 +441,9 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 				sb.WriteString("  - *(暂无自定义模型，使用默认全局上游)*\n")
 			}
 			sb.WriteString("\n> 💡 **命令指南**:\n")
-			sb.WriteString("> * 键入 `/model <模型名称>` 即可在此会话中直接一键切换模型。\n")
+			sb.WriteString("> * **注意**: 由于 Codex 客户端本地会拦截所有 `/` 开头的未知指令，请在聊天中使用 **`!`** 或 **`#`** 作为指令前缀！\n")
+			sb.WriteString("> * 键入 `!switch <模型名称>` 或 `!use <模型名称>` 即可在此会话中直接一键切换当前模型（亦支持 `#` 或 `:` 前缀，例如 `#use gemini-3.5-flash`）。\n")
+			sb.WriteString("> * 键入 `!switch` 或 `!use` 可以随时查看当前可用模型列表与绑定状态。\n")
 			sb.WriteString("> * 在终端运行 `chat2responses config` 可以随时添加或修改模型。\n")
 
 			statusTip = sb.String()
@@ -407,7 +458,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if !isConfigured {
-				statusTip += "\n\n⚠ 提示：模型 \"" + targetModel + "\" 未配置专属上游。接下来的对话将默认路由至本服务的默认全局上游（BaseURL）进行处理。建议您在本地运行 `chat2responses config` 进行绑定。"
+				statusTip += "\n\n⚠ 提示：模型 \"" + targetModel + "\" 未配置专属上游。接下来的对话将默认路由至本服务的默认全局上游（BaseURL）进行处理。建议您在本地运行 `chat2responses config` 进行绑定。\n提示：请使用 **`!`** 或 **`#`** 开头的指令（如 `!switch <模型>` 或 `#use <模型>`）快速完成切换，避开客户端内置的 `/` 命令拦截器。"
 			}
 		}
 
@@ -634,8 +685,16 @@ func Run(cfg *config.Config) {
 	}
 	defer os.Remove(pidFile)
 
+	// 收集用户配置的自定义模型列表
+	var customModels []string
+	if cfg.Models != nil {
+		for mID := range cfg.Models {
+			customModels = append(customModels, mID)
+		}
+	}
+
 	// Automatically check and align Codex CLI's config before starting the server
-	if err := codex.AutoCheckAndFix(cfg.Server.Port, cfg.Model.DefaultModel, cfg.Upstream.APIKey); err != nil {
+	if err := codex.AutoCheckAndFix(cfg.Server.Port, cfg.Model.DefaultModel, cfg.Upstream.APIKey, customModels); err != nil {
 		slog.Warn("Failed to automatically verify or correct Codex CLI configuration", "error", err)
 	}
 

@@ -126,7 +126,7 @@ func (c *UpstreamClient) ListModels() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	token := c.apiKey
 	if c.tokenProvider != nil {
 		if t, err := c.tokenProvider(); err == nil {

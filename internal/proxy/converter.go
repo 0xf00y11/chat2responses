@@ -128,6 +128,10 @@ func InputToMessages(body *model.ResponsesRequest, lookupSig func(string) string
 func extractContent(item map[string]interface{}) interface{} {
 	raw, ok := item["content"]
 	if !ok {
+		// 增加对 "text" 字段的直接支持（兼容直接发送的 input_text 类型项）
+		if txt, ok := item["text"].(string); ok {
+			return txt
+		}
 		return ""
 	}
 	switch v := raw.(type) {

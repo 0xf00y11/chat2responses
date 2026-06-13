@@ -136,10 +136,17 @@ func interactiveSetup() {
 		fmt.Print("是否配置到 Codex CLI? (Y/n): ")
 		input, _ = reader.ReadString('\n')
 		if strings.ToLower(strings.TrimSpace(input)) != "n" {
+			var customModels []string
+			if cfg.Models != nil {
+				for mID := range cfg.Models {
+					customModels = append(customModels, mID)
+				}
+			}
 			setupCfg := codex.SetupConfig{
-				Model:   cfg.Model.DefaultModel,
-				BaseURL: fmt.Sprintf("http://127.0.0.1:%d", cfg.Server.Port),
-				APIKey:  cfg.Upstream.APIKey,
+				Model:        cfg.Model.DefaultModel,
+				BaseURL:      fmt.Sprintf("http://127.0.0.1:%d", cfg.Server.Port),
+				APIKey:       cfg.Upstream.APIKey,
+				CustomModels: customModels,
 			}
 			if err := codex.Setup(setupCfg); err != nil {
 				fmt.Fprintf(os.Stderr, "Codex 配置失败: %s\n", err)

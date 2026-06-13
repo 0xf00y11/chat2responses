@@ -167,7 +167,7 @@ func (c *Config) GetGoogleAccessToken() (string, error) {
 	} else if home := os.Getenv("HOME"); home != "" {
 		candidates = append(candidates, filepath.Join(home, ".config", "chat2responses", "config.json"))
 	}
-	
+
 	savePath := "config.json"
 	for _, cand := range candidates {
 		if _, err := os.Stat(cand); err == nil {
