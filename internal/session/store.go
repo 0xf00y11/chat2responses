@@ -1,3 +1,4 @@
+// Author: fooyii, Email: fooyii@icloud.com, Date: 2026-06-13
 package session
 
 import (
@@ -20,6 +21,7 @@ type Store struct {
 
 type session struct {
 	Messages  []model.ChatMessage
+	Model     string // 会话当前绑定/重载的活跃模型
 	CreatedAt time.Time
 }
 
@@ -42,13 +44,28 @@ func (s *Store) Get(respID string) []model.ChatMessage {
 	return nil
 }
 
+// GetModel retrieves the active model name bound to this response ID session chain.
+func (s *Store) GetModel(respID string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if sess, ok := s.sessions[respID]; ok {
+		return sess.Model
+	}
+	return ""
+}
+
 // Set stores the full message history for a response ID.
-// history should contain all messages up to and including the latest assistant response.
 func (s *Store) Set(respID string, history []model.ChatMessage) {
+	s.SetWithModel(respID, history, "")
+}
+
+// SetWithModel stores the full message history and the active model name for a response ID.
+func (s *Store) SetWithModel(respID string, history []model.ChatMessage, modelName string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessions[respID] = &session{
 		Messages:  history,
+		Model:     modelName,
 		CreatedAt: time.Now(),
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -171,6 +172,157 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// parseModelCommand - 检测并提取用户发送的 "/model <model_name>" 动态切换模型指令
+func parseModelCommand(messages []model.ChatMessage) (string, bool) {
+	if len(messages) == 0 {
+		return "", false
+	}
+	lastMsg := messages[len(messages)-1]
+	if lastMsg.Role != "user" {
+		return "", false
+	}
+	contentStr, ok := lastMsg.Content.(string)
+	if !ok {
+		return "", false
+	}
+	trimmed := strings.TrimSpace(contentStr)
+	if strings.HasPrefix(trimmed, "/model ") {
+		modelName := strings.TrimSpace(strings.TrimPrefix(trimmed, "/model "))
+		if modelName != "" {
+			return modelName, true
+		}
+	}
+	return "", false
+}
+
+// sendMockResponsesStream - 在流式输出模式下，向客户端直接吐出自定义的模型切换成功响应 SSE 数据流
+func sendMockResponsesStream(w http.ResponseWriter, respID, text, modelName string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Request-Id", respID)
+
+	flusher, ok := w.(http.Flusher)
+	sendEvent := func(evt interface{}) {
+		data, err := json.Marshal(evt)
+		if err == nil {
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			if ok {
+				flusher.Flush()
+			}
+		}
+	}
+
+	msgID := model.MakeID()
+
+	// response.created
+	sendEvent(map[string]interface{}{
+		"type": "response.created",
+		"response": map[string]interface{}{
+			"id":     respID,
+			"object": "response",
+			"status": "in_progress",
+		},
+	})
+
+	// response.output_item.added
+	sendEvent(map[string]interface{}{
+		"type":         "response.output_item.added",
+		"output_index": 0,
+		"item": map[string]interface{}{
+			"id":      msgID,
+			"type":    "message",
+			"role":    "assistant",
+			"status":  "in_progress",
+			"content": []interface{}{},
+		},
+	})
+
+	// response.content_part.added
+	sendEvent(map[string]interface{}{
+		"type":         "response.content_part.added",
+		"item_id":      msgID,
+		"output_index": 0,
+		"part_index":   0,
+		"part": map[string]interface{}{
+			"type":        "output_text",
+			"text":        "",
+			"annotations": []interface{}{},
+		},
+	})
+
+	// response.content_part.delta
+	sendEvent(map[string]interface{}{
+		"type":         "response.content_part.delta",
+		"item_id":      msgID,
+		"output_index": 0,
+		"part_index":   0,
+		"delta": map[string]interface{}{
+			"text": text,
+		},
+	})
+
+	block := map[string]interface{}{
+		"type":        "output_text",
+		"text":        text,
+		"annotations": []interface{}{},
+	}
+
+	// response.content_part.done
+	sendEvent(map[string]interface{}{
+		"type":         "response.content_part.done",
+		"item_id":      msgID,
+		"output_index": 0,
+		"part_index":   0,
+		"part":         block,
+	})
+
+	contentBlocks := []interface{}{block}
+
+	// response.output_item.done
+	sendEvent(map[string]interface{}{
+		"type":         "response.output_item.done",
+		"output_index": 0,
+		"item": map[string]interface{}{
+			"id":      msgID,
+			"type":    "message",
+			"role":    "assistant",
+			"status":  "completed",
+			"content": contentBlocks,
+		},
+	})
+
+	outputItems := []interface{}{map[string]interface{}{
+		"id":      msgID,
+		"type":    "message",
+		"role":    "assistant",
+		"status":  "completed",
+		"content": contentBlocks,
+	}}
+
+	// response.completed
+	sendEvent(map[string]interface{}{
+		"type": "response.completed",
+		"response": map[string]interface{}{
+			"id":     respID,
+			"object": "response",
+			"status": "completed",
+			"model":  modelName,
+			"output": outputItems,
+			"usage": map[string]interface{}{
+				"input_tokens":  0,
+				"output_tokens": 0,
+				"total_tokens":  0,
+			},
+		},
+	})
+
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+	if ok {
+		flusher.Flush()
+	}
+}
+
 func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -189,14 +341,10 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Model == "" {
-		req.Model = s.cfg.ResolveModel("")
+	activeModel := req.Model
+	if activeModel == "" {
+		activeModel = s.cfg.ResolveModel("")
 	}
-
-	respID := model.MakeID()
-
-	// Build messages from this request
-	newMessages := proxy.InputToMessages(&req, s.session.FindThoughtSignature)
 
 	// Look up previous session to reconstruct the full conversation
 	var fullMessages []model.ChatMessage
@@ -208,6 +356,77 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 				"prev_id", req.PreviousResponseID,
 			)
 		}
+
+		// 如果此会话链中已被 "/model" 动态重载，我们需要在整条会话后续生命周期里强制自动生效它
+		if prevModel := s.session.GetModel(req.PreviousResponseID); prevModel != "" {
+			activeModel = prevModel
+		}
+	}
+
+	respID := model.MakeID()
+
+	// Build messages from this request
+	newMessages := proxy.InputToMessages(&req, s.session.FindThoughtSignature)
+
+	// =========================================================================
+	// ⚡ 动态指令拦截机制：检查是否触发 "/model " 命令
+	// =========================================================================
+	if targetModel, isCmd := parseModelCommand(newMessages); isCmd {
+		// 校验该模型状态以作友好提示
+		statusTip := "✓ 已成功将当前会话模型切换至：" + targetModel + "。接下来的对话将由该模型为您提供服务。"
+		isConfigured := targetModel == s.cfg.Model.DefaultModel
+		if s.cfg.Models != nil {
+			if _, exists := s.cfg.Models[targetModel]; exists {
+				isConfigured = true
+			}
+		}
+		if !isConfigured {
+			statusTip += "\n\n⚠ 提示：模型 \"" + targetModel + "\" 未配置专属上游。接下来的对话将默认路由至本服务的默认全局上游（BaseURL）进行处理。建议您在本地运行 `chat2responses config` 进行绑定。"
+		}
+
+		// 将此命令和模拟响应持久化写入 Session Store 中
+		assistantMsg := model.ChatMessage{
+			Role:    "assistant",
+			Content: statusTip,
+		}
+		fullWithResponse := append(fullMessages, newMessages...)
+		fullWithResponse = append(fullWithResponse, assistantMsg)
+		s.session.SetWithModel(respID, fullWithResponse, targetModel) // 强行绑定全新 Model!
+
+		if req.Stream {
+			sendMockResponsesStream(w, respID, statusTip, targetModel)
+			return
+		}
+
+		// 非流式下，直接返回完美组装的 Response 实体
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":         respID,
+			"object":     "response",
+			"created_at": time.Now().Unix(),
+			"status":     "completed",
+			"model":      targetModel,
+			"output": []interface{}{
+				map[string]interface{}{
+					"id":     model.MakeID(),
+					"type":   "message",
+					"role":   "assistant",
+					"status": "completed",
+					"content": []interface{}{
+						map[string]interface{}{
+							"type": "output_text",
+							"text": statusTip,
+						},
+					},
+				},
+			},
+			"usage": map[string]interface{}{
+				"input_tokens":  0,
+				"output_tokens": 0,
+				"total_tokens":  0,
+			},
+		})
+		return
 	}
 
 	// If this is the first request in a session, include instructions as system message
@@ -222,7 +441,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	fullMessages = append(fullMessages, newMessages...)
 
 	chatReq := &model.ChatRequest{
-		Model:             req.Model,
+		Model:             activeModel, // 使用根据会话继承/重载后的活跃模型
 		Messages:          fullMessages,
 		Stream:            req.Stream,
 		MaxTokens:         req.MaxOutputTokens,
@@ -336,7 +555,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			fullWithResponse[len(fullWithResponse)-1].ToolCalls = result.CollectedToolCalls()
 		}
 		if result.CollectedText() != "" || result.CollectedReasoning() != "" || len(result.CollectedToolCalls()) > 0 {
-			s.session.Set(respID, fullWithResponse)
+			s.session.SetWithModel(respID, fullWithResponse, activeModel) // 继承当前活跃模型
 		}
 
 		slog.Info("completed",
@@ -361,7 +580,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if len(chatResp.Choices) > 0 {
 		assistantMsg := chatResp.Choices[0].Message
 		fullWithResponse := append(fullMessages, assistantMsg)
-		s.session.Set(respID, fullWithResponse)
+		s.session.SetWithModel(respID, fullWithResponse, activeModel) // 继承当前活跃模型
 	}
 
 	usage := ""
