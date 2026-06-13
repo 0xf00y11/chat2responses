@@ -35,3 +35,12 @@ go.work.sum
 AGENTS.md
 init-codex-rules.sh
 .codex-local.md
+
+# =============================================================================
+# Codex 安全加固：自动拦截常见高危敏感配置文件与密钥证书，防止意外提交泄露
+.env.local
+.env.*.local
+*.pem
+*.key
+*.pfx
+*.cer

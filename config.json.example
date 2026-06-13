@@ -8,7 +8,19 @@
     "port": 8000
   },
   "model": {
-    "default_model": "gpt-4o"
+    "default_model": "deepseek-v4-flash"
+  },
+  "deepseek_v4_flash": {
+    "base_url": "https://api.deepseek.com/v1",
+    "api_key": "sk-your-deepseek-key-here"
+  },
+  "deepseek_v4_pro": {
+    "base_url": "https://api.deepseek.com/v1",
+    "api_key": "sk-your-deepseek-key-here"
+  },
+  "gemini_3_5_flash": {
+    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "api_key": "sk-your-gemini-key-here"
   },
   "debug": false
 }

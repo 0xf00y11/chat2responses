@@ -1,3 +1,4 @@
+// Author: fooyii, Email: fooyii@icloud.com, Date: 2026-06-13
 // Package proxy - 上游 API 客户端 - 转发 Chat Completions 请求并处理流式/非流式响应
 // Copyright (c) 2026 fooyii.
 // Created: 2026-05-22
@@ -16,10 +17,11 @@ import (
 )
 
 type UpstreamClient struct {
-	baseURL  string
-	apiKey   string
-	defModel string
-	http     *http.Client
+	baseURL       string
+	apiKey        string
+	defModel      string
+	http          *http.Client
+	tokenProvider func() (string, error) // 动态令牌提供者，主要用于 OAuth 续期
 }
 
 func NewUpstreamClient(baseURL, apiKey, defModel string) *UpstreamClient {
@@ -31,6 +33,11 @@ func NewUpstreamClient(baseURL, apiKey, defModel string) *UpstreamClient {
 			Timeout: 300 * time.Second,
 		},
 	}
+}
+
+// SetTokenProvider - 注入动态 Token 提供器函数
+func (c *UpstreamClient) SetTokenProvider(fn func() (string, error)) {
+	c.tokenProvider = fn
 }
 
 func (c *UpstreamClient) ChatCompletion(req *model.ChatRequest) (*model.ChatResponse, error) {
@@ -47,7 +54,15 @@ func (c *UpstreamClient) ChatCompletion(req *model.ChatRequest) (*model.ChatResp
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	// 动态获取最新的 Bearer Token (若已配置 Token 刷新器)
+	token := c.apiKey
+	if c.tokenProvider != nil {
+		if t, err := c.tokenProvider(); err == nil {
+			token = t
+		}
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
@@ -83,7 +98,15 @@ func (c *UpstreamClient) ChatCompletionStream(req *model.ChatRequest) (io.ReadCl
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	// 动态获取最新的 Bearer Token (若已配置 Token 刷新器)
+	token := c.apiKey
+	if c.tokenProvider != nil {
+		if t, err := c.tokenProvider(); err == nil {
+			token = t
+		}
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("Accept", "text/event-stream")
 
 	resp, err := c.http.Do(httpReq)
@@ -103,7 +126,14 @@ func (c *UpstreamClient) ListModels() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	
+	token := c.apiKey
+	if c.tokenProvider != nil {
+		if t, err := c.tokenProvider(); err == nil {
+			token = t
+		}
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {

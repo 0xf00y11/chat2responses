@@ -1,3 +1,4 @@
+// Author: fooyii, Email: fooyii@icloud.com, Date: 2026-06-13
 package server
 
 import (
@@ -7,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
+	"sync"
 	"time"
 
 	"chat2responses/internal/codex"
@@ -17,19 +20,45 @@ import (
 )
 
 type Server struct {
-	cfg     *config.Config
-	client  *proxy.UpstreamClient
-	session *session.Store
-	mux     *http.ServeMux
+	cfg       *config.Config
+	client    *proxy.UpstreamClient
+	clients   map[string]*proxy.UpstreamClient // 通用多模型客户端缓存，格式：{modelName: client}
+	clientsMu sync.RWMutex                     // 读写锁保护 map 并发读写
+	session   *session.Store
+	mux       *http.ServeMux
 }
 
 func New(cfg *config.Config) *Server {
 	s := &Server{
 		cfg:     cfg,
 		client:  proxy.NewUpstreamClient(cfg.Upstream.BaseURL, cfg.Upstream.APIKey, cfg.Model.DefaultModel),
+		clients: make(map[string]*proxy.UpstreamClient),
 		session: session.NewStore(),
 		mux:     http.NewServeMux(),
 	}
+
+	// 若全局上游使用 Google OAuth
+	if cfg.Upstream.APIKey == "google_oauth" {
+		s.client.SetTokenProvider(cfg.GetGoogleAccessToken)
+	}
+
+	// 预先初始化配置的所有模型客户端
+	if cfg.Models != nil {
+		for mID, mu := range cfg.Models {
+			if mu.BaseURL != "" && mu.APIKey != "" {
+				actualModel := mID
+				if mu.UpstreamModel != "" {
+					actualModel = mu.UpstreamModel
+				}
+				client := proxy.NewUpstreamClient(mu.BaseURL, mu.APIKey, actualModel)
+				if mu.APIKey == "google_oauth" {
+					client.SetTokenProvider(cfg.GetGoogleAccessToken)
+				}
+				s.clients[mID] = client
+			}
+		}
+	}
+
 	s.mux.HandleFunc("POST /v1/responses", s.handleResponses)
 	s.mux.HandleFunc("GET /v1/models", s.handleModels)
 	s.mux.HandleFunc("GET /health", s.handleHealth)
@@ -48,15 +77,98 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	data, err := s.client.ListModels()
-	if err != nil {
-		slog.Error("list models", "error", err)
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
+// getClientForModel - 根据请求的模型名称路由至正确的上游客户端实例，并返回该客户端对应要请求的真实模型名
+func (s *Server) getClientForModel(modelName string) (*proxy.UpstreamClient, string) {
+	if modelName == "" {
+		modelName = s.cfg.ResolveModel("")
 	}
+
+	actualModel := modelName
+
+	// 检查自定义模型映射配置
+	if s.cfg.Models != nil {
+		if mu, exists := s.cfg.Models[modelName]; exists {
+			if mu.UpstreamModel != "" {
+				actualModel = mu.UpstreamModel
+			}
+			// 如果该模型配置了专属的 BaseURL 和 APIKey，则需要专属 client
+			if mu.BaseURL != "" && mu.APIKey != "" {
+				s.clientsMu.RLock()
+				c, ok := s.clients[modelName]
+				s.clientsMu.RUnlock()
+				if ok && c != nil {
+					return c, actualModel
+				}
+
+				// 懒加载并双检锁
+				s.clientsMu.Lock()
+				defer s.clientsMu.Unlock()
+				if c, ok = s.clients[modelName]; ok && c != nil {
+					return c, actualModel
+				}
+
+				client := proxy.NewUpstreamClient(mu.BaseURL, mu.APIKey, actualModel)
+				if mu.APIKey == "google_oauth" {
+					client.SetTokenProvider(s.cfg.GetGoogleAccessToken)
+				}
+				s.clients[modelName] = client
+				return client, actualModel
+			}
+		}
+	}
+
+	// 否则直接使用默认 client，并返回可能由 upstream_model 指定的重命名后的真实模型名
+	return s.client, actualModel
+}
+
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	var models []map[string]interface{}
+	if data, err := s.client.ListModels(); err == nil {
+		var resp struct {
+			Data []map[string]interface{} `json:"data"`
+		}
+		if json.Unmarshal(data, &resp) == nil && len(resp.Data) > 0 {
+			models = resp.Data
+		}
+	}
+
+	// 保证我们所有在 Models 配置中自定义的模型也列在其中
+	modelIDs := make(map[string]bool)
+	for _, m := range models {
+		if id, ok := m["id"].(string); ok {
+			modelIDs[id] = true
+		}
+	}
+
+	if s.cfg.Models != nil {
+		for mID := range s.cfg.Models {
+			if !modelIDs[mID] {
+				models = append(models, map[string]interface{}{
+					"id":       mID,
+					"object":   "model",
+					"created":  time.Now().Unix(),
+					"owned_by": "chat2responses",
+				})
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(data)
+	if len(models) == 0 {
+		models = []map[string]interface{}{
+			{
+				"id":       s.cfg.Model.DefaultModel,
+				"object":   "model",
+				"created":  time.Now().Unix(),
+				"owned_by": "chat2responses",
+			},
+		}
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"object": "list",
+		"data":   models,
+	})
 }
 
 func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
@@ -190,13 +302,17 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		"body_bytes", len(body),
 	)
 
-	if req.Stream {
+	// 获取路由对应的具体 client 实例，以及其真正的上游模型名称
+	client, actualModel := s.getClientForModel(chatReq.Model)
+	chatReq.Model = actualModel // 替换为真正上游请求的模型名（别名映射）
+
+	if chatReq.Stream {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 		w.Header().Set("X-Request-Id", respID)
 
-		upstreamBody, err := s.client.ChatCompletionStream(chatReq)
+		upstreamBody, err := client.ChatCompletionStream(chatReq)
 		if err != nil {
 			slog.Error("upstream stream", "error", err)
 			http.Error(w, fmt.Sprintf("upstream error: %s", err), http.StatusBadGateway)
@@ -232,7 +348,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Non-streaming
-	chatResp, err := s.client.ChatCompletion(chatReq)
+	chatResp, err := client.ChatCompletion(chatReq)
 	if err != nil {
 		slog.Error("upstream", "error", err)
 		http.Error(w, fmt.Sprintf("upstream error: %s", err), http.StatusBadGateway)
@@ -265,6 +381,13 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 }
 
 func Run(cfg *config.Config) {
+	// 写入当前进程的 PID 文件，方便后续一键优雅关闭
+	pidFile := filepath.Join(os.TempDir(), "chat2responses.pid")
+	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644); err != nil {
+		slog.Warn("Failed to write PID file", "error", err)
+	}
+	defer os.Remove(pidFile)
+
 	// Automatically check and align Codex CLI's config before starting the server
 	if err := codex.AutoCheckAndFix(cfg.Server.Port, cfg.Model.DefaultModel, cfg.Upstream.APIKey); err != nil {
 		slog.Warn("Failed to automatically verify or correct Codex CLI configuration", "error", err)
