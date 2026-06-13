@@ -172,30 +172,34 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// parseModelCommand - 检测并提取用户发送的 "/model <model_name>" 动态切换模型指令
-func parseModelCommand(messages []model.ChatMessage) (string, bool) {
+// parseModelCommand - 检测并提取用户发送的 "/model" 或 "/model <model_name>" 动态切换指令
+func parseModelCommand(messages []model.ChatMessage) (cmdType string, param string, isCmd bool) {
 	if len(messages) == 0 {
-		return "", false
+		return "", "", false
 	}
 	lastMsg := messages[len(messages)-1]
 	if lastMsg.Role != "user" {
-		return "", false
+		return "", "", false
 	}
 	contentStr, ok := lastMsg.Content.(string)
 	if !ok {
-		return "", false
+		return "", "", false
 	}
 	trimmed := strings.TrimSpace(contentStr)
+	if trimmed == "/model" {
+		return "list", "", true
+	}
 	if strings.HasPrefix(trimmed, "/model ") {
 		modelName := strings.TrimSpace(strings.TrimPrefix(trimmed, "/model "))
-		if modelName != "" {
-			return modelName, true
+		if modelName == "" {
+			return "list", "", true
 		}
+		return "switch", modelName, true
 	}
-	return "", false
+	return "", "", false
 }
 
-// sendMockResponsesStream - 在流式输出模式下，向客户端直接吐出自定义的模型切换成功响应 SSE 数据流
+// sendMockResponsesStream - 在流式输出模式下，向客户端直接吐出自定义的模型切换或列表响应 SSE 数据流
 func sendMockResponsesStream(w http.ResponseWriter, respID, text, modelName string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -369,19 +373,52 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	newMessages := proxy.InputToMessages(&req, s.session.FindThoughtSignature)
 
 	// =========================================================================
-	// ⚡ 动态指令拦截机制：检查是否触发 "/model " 命令
+	// ⚡ 动态指令拦截机制：检查是否触发 "/model" 指令列表或切换
 	// =========================================================================
-	if targetModel, isCmd := parseModelCommand(newMessages); isCmd {
-		// 校验该模型状态以作友好提示
-		statusTip := "✓ 已成功将当前会话模型切换至：" + targetModel + "。接下来的对话将由该模型为您提供服务。"
-		isConfigured := targetModel == s.cfg.Model.DefaultModel
-		if s.cfg.Models != nil {
-			if _, exists := s.cfg.Models[targetModel]; exists {
-				isConfigured = true
+	if cmdType, targetModel, isCmd := parseModelCommand(newMessages); isCmd {
+		var statusTip string
+		actualBindingModel := activeModel
+
+		if cmdType == "list" {
+			// 1. 构造模型列表 Markdown 报表
+			var sb strings.Builder
+			sb.WriteString("### 🤖 当前可用模型列表\n\n")
+			sb.WriteString(fmt.Sprintf("* 🟢 **当前会话激活模型**: `%s`\n", activeModel))
+			sb.WriteString(fmt.Sprintf("* 🏠 **默认回退模型**: `%s`\n\n", s.cfg.Model.DefaultModel))
+			sb.WriteString("#### ⚙️ 已配置的自定义模型：\n")
+
+			hasCustom := false
+			if s.cfg.Models != nil && len(s.cfg.Models) > 0 {
+				for mID, mu := range s.cfg.Models {
+					upstreamInfo := ""
+					if mu.UpstreamModel != "" && mu.UpstreamModel != mID {
+						upstreamInfo = fmt.Sprintf(" -> 上游映射: `%s`", mu.UpstreamModel)
+					}
+					sb.WriteString(fmt.Sprintf("  - `%s` (地址: `%s`%s)\n", mID, mu.BaseURL, upstreamInfo))
+					hasCustom = true
+				}
 			}
-		}
-		if !isConfigured {
-			statusTip += "\n\n⚠ 提示：模型 \"" + targetModel + "\" 未配置专属上游。接下来的对话将默认路由至本服务的默认全局上游（BaseURL）进行处理。建议您在本地运行 `chat2responses config` 进行绑定。"
+			if !hasCustom {
+				sb.WriteString("  - *(暂无自定义模型，使用默认全局上游)*\n")
+			}
+			sb.WriteString("\n> 💡 **命令指南**:\n")
+			sb.WriteString("> * 键入 `/model <模型名称>` 即可在此会话中直接一键切换模型。\n")
+			sb.WriteString("> * 在终端运行 `chat2responses config` 可以随时添加或修改模型。\n")
+
+			statusTip = sb.String()
+		} else {
+			// cmdType == "switch"
+			actualBindingModel = targetModel
+			statusTip = "✓ 已成功将当前会话模型切换至：" + targetModel + "。接下来的对话将由该模型为您提供服务。"
+			isConfigured := targetModel == s.cfg.Model.DefaultModel
+			if s.cfg.Models != nil {
+				if _, exists := s.cfg.Models[targetModel]; exists {
+					isConfigured = true
+				}
+			}
+			if !isConfigured {
+				statusTip += "\n\n⚠ 提示：模型 \"" + targetModel + "\" 未配置专属上游。接下来的对话将默认路由至本服务的默认全局上游（BaseURL）进行处理。建议您在本地运行 `chat2responses config` 进行绑定。"
+			}
 		}
 
 		// 将此命令和模拟响应持久化写入 Session Store 中
@@ -391,10 +428,10 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		}
 		fullWithResponse := append(fullMessages, newMessages...)
 		fullWithResponse = append(fullWithResponse, assistantMsg)
-		s.session.SetWithModel(respID, fullWithResponse, targetModel) // 强行绑定全新 Model!
+		s.session.SetWithModel(respID, fullWithResponse, actualBindingModel)
 
 		if req.Stream {
-			sendMockResponsesStream(w, respID, statusTip, targetModel)
+			sendMockResponsesStream(w, respID, statusTip, actualBindingModel)
 			return
 		}
 
@@ -405,7 +442,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			"object":     "response",
 			"created_at": time.Now().Unix(),
 			"status":     "completed",
-			"model":      targetModel,
+			"model":      actualBindingModel,
 			"output": []interface{}{
 				map[string]interface{}{
 					"id":     model.MakeID(),
@@ -600,7 +637,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 }
 
 func Run(cfg *config.Config) {
-	// 写入当前进程的 PID 文件，方便后续一键优雅关闭
+	// 写入当前进程 of PID 文件，方便后续一键优雅关闭
 	pidFile := filepath.Join(os.TempDir(), "chat2responses.pid")
 	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644); err != nil {
 		slog.Warn("Failed to write PID file", "error", err)
