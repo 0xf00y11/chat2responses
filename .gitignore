@@ -30,11 +30,36 @@ go.work.sum
 .idea/
 .vscode/
 
-# Codex workspace artifacts
+# Codex & Antigravity workspace artifacts and generated files
 .codex-rules
+.agy-rules
+.codex-local.md
+.agy-local.md
 AGENTS.md
 init-codex-rules.sh
-.codex-local.md
+
+# Operating System files
+## macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Icon?
+
+## Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+## Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
 
 # =============================================================================
 # Codex 安全加固：自动拦截常见高危敏感配置文件与密钥证书，防止意外提交泄露
