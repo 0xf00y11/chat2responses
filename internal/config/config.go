@@ -1,4 +1,4 @@
-// Author: fooyii, Email: fooyii@icloud.com, Date: 2026-06-13
+// Author: fooyii, Email: fooyii@icloud.com, Date: 2026-06-20
 // Package config - 配置管理 - 加载、保存和解析 chat2responses 配置文件
 // Copyright (c) 2026 fooyii.
 // Created: 2026-05-22
@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -53,6 +54,8 @@ type Config struct {
 	Models      map[string]ModelUpstream `json:"models,omitempty"`
 	GoogleOAuth *GoogleOAuthConfig       `json:"google_oauth,omitempty"` // Google OAuth 证书和令牌缓存
 	Debug       bool                     `json:"debug"`
+	LoadedPath  string                   `json:"-"` // 记录本次成功加载的配置绝对路径，避免回写到错误的文件
+	mu          sync.Mutex               `json:"-"` // 互斥锁，保证并发安全，避免 Token 刷新和文件保存的竞态冲突
 }
 
 var DefaultConfig = Config{
@@ -61,7 +64,9 @@ var DefaultConfig = Config{
 
 // Load - 从指定路径或候选路径加载配置文件
 func Load(path string) (*Config, error) {
-	cfg := DefaultConfig
+	cfg := &Config{
+		Server: DefaultConfig.Server,
+	}
 	candidates := []string{"./config.json"}
 	if home := os.Getenv("XDG_CONFIG_HOME"); home != "" {
 		candidates = append(candidates, filepath.Join(home, "chat2responses", "config.json"))
@@ -87,7 +92,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
 
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 
@@ -97,7 +102,14 @@ func Load(path string) (*Config, error) {
 	if cfg.Upstream.APIKey == "" {
 		return nil, fmt.Errorf("upstream.api_key is required")
 	}
-	return &cfg, nil
+
+	if absPath, err := filepath.Abs(path); err == nil {
+		cfg.LoadedPath = absPath
+	} else {
+		cfg.LoadedPath = path
+	}
+
+	return cfg, nil
 }
 
 // ResolveModel - 解析当前请求需要的实际模型，如果请求模型为空则返回默认模型
@@ -108,13 +120,22 @@ func (c *Config) ResolveModel(requested string) string {
 	return c.Model.DefaultModel
 }
 
-// GetGoogleAccessToken - 自动获取或通过 Refresh Token 静默续签 Google Access Token
+// GetGoogleAccessToken - 自动获取或通过 Refresh Token 静默续签 Google Access Token，采用双检锁防止并发刷新冲突。
 func (c *Config) GetGoogleAccessToken() (string, error) {
 	if c.GoogleOAuth == nil {
 		return "", fmt.Errorf("google_oauth is not configured")
 	}
 
-	// 如果 Access Token 依然有效（留出 5 分钟的安全缓冲），直接返回它
+	// 1. 第一层检查：无锁快速通路
+	if c.GoogleOAuth.AccessToken != "" && c.GoogleOAuth.Expiry.After(time.Now().Add(5*time.Minute)) {
+		return c.GoogleOAuth.AccessToken, nil
+	}
+
+	// 2. 加锁保护并发读写和磁盘写入
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 3. 第二层检查（双检锁）：确保排队等锁的 goroutine 直接复用刚才已被前序请求刷新好的 Token
 	if c.GoogleOAuth.AccessToken != "" && c.GoogleOAuth.Expiry.After(time.Now().Add(5*time.Minute)) {
 		return c.GoogleOAuth.AccessToken, nil
 	}
@@ -160,20 +181,10 @@ func (c *Config) GetGoogleAccessToken() (string, error) {
 	c.GoogleOAuth.AccessToken = tokenResp.AccessToken
 	c.GoogleOAuth.Expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 
-	// 找出目前的 config.json 实际存放路径并进行回写持久化
-	candidates := []string{"./config.json"}
-	if home := os.Getenv("XDG_CONFIG_HOME"); home != "" {
-		candidates = append(candidates, filepath.Join(home, "chat2responses", "config.json"))
-	} else if home := os.Getenv("HOME"); home != "" {
-		candidates = append(candidates, filepath.Join(home, ".config", "chat2responses", "config.json"))
-	}
-
-	savePath := "config.json"
-	for _, cand := range candidates {
-		if _, err := os.Stat(cand); err == nil {
-			savePath = cand
-			break
-		}
+	// 直接写回原加载路径，如果没有则回退至 config.json
+	savePath := c.LoadedPath
+	if savePath == "" {
+		savePath = "config.json"
 	}
 
 	_ = Save(c, savePath) // 静默写入
@@ -191,4 +202,35 @@ func Save(cfg *Config, path string) error {
 		return fmt.Errorf("write config: %w", err)
 	}
 	return nil
+}
+
+// GetPIDFilePath - 根据当前用户和工作区哈希获取唯一隔离的 PID 文件路径，防止多用户、多项目写冲突。
+func GetPIDFilePath() string {
+	wd, err := os.Getwd()
+	var wdHash string
+	if err == nil {
+		sum := uint32(0)
+		for _, c := range wd {
+			sum = sum*31 + uint32(c)
+		}
+		wdHash = fmt.Sprintf("%08x", sum)
+	} else {
+		wdHash = "default"
+	}
+
+	// 优先存放到当前用户的 Home 目录下（例如 ~/.chat2responses_wdhash.pid）
+	home, err := os.UserHomeDir()
+	if err == nil && home != "" {
+		return filepath.Join(home, fmt.Sprintf(".chat2responses_%s.pid", wdHash))
+	}
+
+	// 若获取不到 Home，则回退到共享 Temp 目录并带上用户标识和工作目录哈希
+	uidStr := "unknown"
+	if u := os.Getenv("USER"); u != "" {
+		uidStr = u
+	} else if u := os.Getenv("USERNAME"); u != "" {
+		uidStr = u
+	}
+
+	return filepath.Join(os.TempDir(), fmt.Sprintf("chat2responses_%s_%s.pid", uidStr, wdHash))
 }

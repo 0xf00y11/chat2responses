@@ -140,13 +140,13 @@ func TestParseModelCommand(t *testing.T) {
 	if !isCmd || cmdType != "switch" || param != "deepseek-v4-pro" {
 		t.Errorf("Expected switch command from /use, got isCmd=%v, cmdType=%s, param=%s", isCmd, cmdType, param)
 	}
-	// 7. 测试 !switch 列表指令
+	// 7. 测试 #switch 列表指令
 	msgs7 := []model.ChatMessage{
-		{Role: "user", Content: "!switch"},
+		{Role: "user", Content: "#switch"},
 	}
 	cmdType, param, isCmd = parseModelCommand(msgs7)
 	if !isCmd || cmdType != "list" || param != "" {
-		t.Errorf("Expected list command from !switch, got isCmd=%v, cmdType=%s, param=%s", isCmd, cmdType, param)
+		t.Errorf("Expected list command from #switch, got isCmd=%v, cmdType=%s, param=%s", isCmd, cmdType, param)
 	}
 
 	// 8. 测试 #use <model> 切换指令

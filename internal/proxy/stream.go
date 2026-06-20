@@ -1,3 +1,8 @@
+// Author: fooyii, Email: fooyii@icloud.com, Date: 2026-06-20
+// Package proxy - 上游 API 客户端 - 处理流式协议转换并在终端输出 SSE 格式内容
+// Copyright (c) 2026 fooyii.
+// Created: 2026-05-22
+
 package proxy
 
 import (
@@ -11,17 +16,8 @@ import (
 	"chat2responses/internal/model"
 )
 
-// codex: max-lines(490)
 // Note: This file is paired with internal/proxy/converter.go. Any changes to reasoning
 // content or tool call parsing must be synchronized between both files.
-
-type toolCallBuilder struct {
-	Index            int
-	ID               string
-	Name             string
-	Args             strings.Builder
-	ThoughtSignature string
-}
 
 type StreamConverter struct {
 	model              string
@@ -292,38 +288,8 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 						builder.Name = name
 					}
 				}
-				if ts, ok := tc["thought_signature"].(string); ok && ts != "" {
+				if ts := extractThoughtSignature(tc); ts != "" {
 					builder.ThoughtSignature = ts
-				} else if ts, ok := tc["thoughtSignature"].(string); ok && ts != "" {
-					builder.ThoughtSignature = ts
-				} else if ec, ok := tc["extra_content"].(map[string]interface{}); ok {
-					if google, ok := ec["google"].(map[string]interface{}); ok {
-						if ts, ok := google["thought_signature"].(string); ok && ts != "" {
-							builder.ThoughtSignature = ts
-						} else if ts, ok := google["thoughtSignature"].(string); ok && ts != "" {
-							builder.ThoughtSignature = ts
-						}
-					}
-				} else if ec, ok := tc["extraContent"].(map[string]interface{}); ok {
-					if google, ok := ec["google"].(map[string]interface{}); ok {
-						if ts, ok := google["thought_signature"].(string); ok && ts != "" {
-							builder.ThoughtSignature = ts
-						} else if ts, ok := google["thoughtSignature"].(string); ok && ts != "" {
-							builder.ThoughtSignature = ts
-						}
-					}
-				} else if google, ok := tc["google"].(map[string]interface{}); ok {
-					if ts, ok := google["thought_signature"].(string); ok && ts != "" {
-						builder.ThoughtSignature = ts
-					} else if ts, ok := google["thoughtSignature"].(string); ok && ts != "" {
-						builder.ThoughtSignature = ts
-					}
-				} else if fn, ok := tc["function"].(map[string]interface{}); ok {
-					if ts, ok := fn["thought_signature"].(string); ok && ts != "" {
-						builder.ThoughtSignature = ts
-					} else if ts, ok := fn["thoughtSignature"].(string); ok && ts != "" {
-						builder.ThoughtSignature = ts
-					}
 				}
 			}
 		}
@@ -475,25 +441,4 @@ func (sc *StreamConverter) Convert(upstream io.ReadCloser, w io.Writer) error {
 
 	fmt.Fprintf(w, "data: [DONE]\n\n")
 	return nil
-}
-
-func buildUsage(u map[string]interface{}) map[string]interface{} {
-	result := map[string]interface{}{
-		"input_tokens":  0,
-		"output_tokens": 0,
-		"total_tokens":  0,
-	}
-	if u == nil {
-		return result
-	}
-	if v, ok := u["prompt_tokens"]; ok {
-		result["input_tokens"] = v
-	}
-	if v, ok := u["completion_tokens"]; ok {
-		result["output_tokens"] = v
-	}
-	if v, ok := u["total_tokens"]; ok {
-		result["total_tokens"] = v
-	}
-	return result
 }

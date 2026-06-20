@@ -124,3 +124,61 @@ models = ["deepseek-v4-flash", "deepseek-v4-pro", "gemini-3.5-flash", "glm-5.1"]
 		t.Errorf("expected update to be idempotent, but it changed again.\nFirst update:\n%s\nSecond update:\n%s", updated, twiceUpdated)
 	}
 }
+
+func TestSwitchProvider(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codex-test-switch-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", origHome)
+
+	configFilePath := filepath.Join(tempDir, configDir, configFile)
+	cDir := filepath.Dir(configFilePath)
+	if err := os.MkdirAll(cDir, 0755); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+
+	initialContent := `model_provider = "custom"
+model = "gemini-3.5-flash"
+`
+	if err := os.WriteFile(configFilePath, []byte(initialContent), 0644); err != nil {
+		t.Fatalf("failed to write initial config: %v", err)
+	}
+
+	err = SwitchProvider("official")
+	if err != nil {
+		t.Fatalf("SwitchProvider(official) returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(configFilePath)
+	if err != nil {
+		t.Fatalf("failed to read config: %v", err)
+	}
+
+	content := string(data)
+	if !strings.Contains(content, `model_provider = "openai"`) {
+		t.Errorf("expected model_provider to be openai, got:\n%s", content)
+	}
+	if !strings.Contains(content, `model = "gpt-4o"`) {
+		t.Errorf("expected model to be gpt-4o, got:\n%s", content)
+	}
+
+	err = SwitchProvider("proxy")
+	if err != nil {
+		t.Fatalf("SwitchProvider(proxy) returned error: %v", err)
+	}
+
+	data, err = os.ReadFile(configFilePath)
+	if err != nil {
+		t.Fatalf("failed to read config: %v", err)
+	}
+
+	content = string(data)
+	if !strings.Contains(content, `model_provider = "custom"`) {
+		t.Errorf("expected model_provider to be custom, got:\n%s", content)
+	}
+}

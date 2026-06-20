@@ -1,4 +1,4 @@
-// Author: fooyii, Email: fooyii@icloud.com, Date: 2026-06-13
+// Author: fooyii, Email: fooyii@icloud.com, Date: 2026-06-20
 // Package proxy - 上游 API 客户端 - 转发 Chat Completions 请求并处理流式/非流式响应
 // Copyright (c) 2026 fooyii.
 // Created: 2026-05-22
@@ -7,6 +7,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -40,7 +41,7 @@ func (c *UpstreamClient) SetTokenProvider(fn func() (string, error)) {
 	c.tokenProvider = fn
 }
 
-func (c *UpstreamClient) ChatCompletion(req *model.ChatRequest) (*model.ChatResponse, error) {
+func (c *UpstreamClient) ChatCompletion(ctx context.Context, req *model.ChatRequest) (*model.ChatResponse, error) {
 	if req.Model == "" {
 		req.Model = c.defModel
 	}
@@ -49,7 +50,7 @@ func (c *UpstreamClient) ChatCompletion(req *model.ChatRequest) (*model.ChatResp
 		return nil, fmt.Errorf("marshal: %w", err)
 	}
 
-	httpReq, err := http.NewRequest("POST", c.baseURL+"/chat/completions", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -82,7 +83,7 @@ func (c *UpstreamClient) ChatCompletion(req *model.ChatRequest) (*model.ChatResp
 	return &chatResp, nil
 }
 
-func (c *UpstreamClient) ChatCompletionStream(req *model.ChatRequest) (io.ReadCloser, error) {
+func (c *UpstreamClient) ChatCompletionStream(ctx context.Context, req *model.ChatRequest) (io.ReadCloser, error) {
 	if req.Model == "" {
 		req.Model = c.defModel
 	}
@@ -93,7 +94,7 @@ func (c *UpstreamClient) ChatCompletionStream(req *model.ChatRequest) (io.ReadCl
 		return nil, fmt.Errorf("marshal: %w", err)
 	}
 
-	httpReq, err := http.NewRequest("POST", c.baseURL+"/chat/completions", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

@@ -175,7 +175,8 @@ func IsConfigured() bool {
 func AutoCheckAndFix(serverPort int, currentModel string, apiKey string, customModels []string) error {
 	path, err := configPath()
 	if err != nil {
-		return err
+		slog.Debug("Skipping Codex CLI autocheck: home directory or config path not available", "error", err)
+		return nil
 	}
 
 	data, err := os.ReadFile(path)
@@ -433,4 +434,67 @@ requires_openai_auth = true%s
 	}
 
 	return newContent
+}
+
+// SwitchProvider 切换 Codex 的 model_provider 和 model，实现一键在官方和自定义代理之间登录与使用。
+func SwitchProvider(target string) error {
+	path, err := configPath()
+	if err != nil {
+		return err
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read codex config: %w", err)
+	}
+
+	content := string(data)
+	lines := strings.Split(content, "\n")
+
+	var newProvider string
+	var newModel string
+	if target == "official" || target == "openai" {
+		newProvider = "openai"
+		newModel = "gpt-4o"
+	} else if target == "proxy" || target == "custom" {
+		newProvider = "custom"
+		newModel = "gpt-4o" // 默认模型，可由 AutoCheckAndFix 进行进一步校准
+	} else {
+		return fmt.Errorf("unknown provider target: %s, must be 'official' or 'proxy'", target)
+	}
+
+	hasModelProvider := false
+	hasModel := false
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		parts := strings.SplitN(trimmed, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			if key == "model_provider" {
+				lines[i] = fmt.Sprintf(`model_provider = "%s"`, newProvider)
+				hasModelProvider = true
+			} else if key == "model" {
+				lines[i] = fmt.Sprintf(`model = "%s"`, newModel)
+				hasModel = true
+			}
+		}
+	}
+
+	newContent := strings.Join(lines, "\n")
+	if !hasModelProvider {
+		newContent = fmt.Sprintf(`model_provider = "%s"`, newProvider) + "\n" + newContent
+	}
+	if !hasModel {
+		newContent = fmt.Sprintf(`model = "%s"`, newModel) + "\n" + newContent
+	}
+
+	if err := os.WriteFile(path, []byte(newContent), 0644); err != nil {
+		return fmt.Errorf("write codex config: %w", err)
+	}
+
+	return nil
 }

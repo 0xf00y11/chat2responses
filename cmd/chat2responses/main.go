@@ -52,6 +52,27 @@ func main() {
 		case "stop":
 			stopServer()
 			return
+		case "use-official":
+			if err := codex.SwitchProvider("official"); err != nil {
+				fmt.Fprintf(os.Stderr, "切换官方登录失败: %s\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("✓ 已成功将 Codex 配置文件切换至官方模式 (provider: openai, model: gpt-4o)")
+			fmt.Println("提示：请确保您的环境中设置了 OPENAI_API_KEY 环境变量。")
+			return
+		case "use-proxy":
+			cfg, err := config.Load("")
+			defaultModel := "gpt-4o"
+			if err == nil {
+				defaultModel = cfg.Model.DefaultModel
+			}
+			if err := codex.SwitchProvider("proxy"); err != nil {
+				fmt.Fprintf(os.Stderr, "切换代理登录失败: %s\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("✓ 已成功将 Codex 配置文件切换至代理模式 (provider: custom, model: %s)\n", defaultModel)
+			fmt.Println("提示：请确保代理服务器已启动，且在终端中设置了 CODEX_API_KEY 环境变量。")
+			return
 		case "version", "-v", "--version":
 			fmt.Printf("chat2responses v%s\n", version)
 			return
@@ -82,6 +103,8 @@ USAGE:
     chat2responses login-google        Login with your Google account via OAuth 2.0
     chat2responses stop                Stop the running proxy server gracefully
     chat2responses serve [config_path] Start proxy server with optional config path
+    chat2responses use-official        Switch Codex configuration to official mode (provider: openai)
+    chat2responses use-proxy           Switch Codex configuration to local proxy mode (provider: custom)
     chat2responses version             Show version
     chat2responses help                Show this help`)
 }
@@ -95,7 +118,7 @@ func interactiveSetup() {
 
 	reader := bufio.NewReader(os.Stdin)
 
-	cfg := config.DefaultConfig
+	cfg := &config.Config{Server: config.DefaultConfig.Server}
 
 	fmt.Print("上游 API 地址 (如 https://api.openai.com/v1): ")
 	input, _ := reader.ReadString('\n')
@@ -125,11 +148,17 @@ func interactiveSetup() {
 	fmt.Println("└" + strings.Repeat("─", 35) + "┘")
 	fmt.Println()
 
-	if err := config.Save(&cfg, "config.json"); err != nil {
+	savePath := "config.json"
+	if abs, err := filepath.Abs(savePath); err == nil {
+		cfg.LoadedPath = abs
+	} else {
+		cfg.LoadedPath = savePath
+	}
+	if err := config.Save(cfg, cfg.LoadedPath); err != nil {
 		fmt.Fprintf(os.Stderr, "保存配置失败: %s\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("✓ 配置已保存到 config.json")
+	fmt.Printf("✓ 配置已保存到 %s\n", cfg.LoadedPath)
 	fmt.Println()
 
 	if !codex.IsConfigured() {
@@ -167,7 +196,7 @@ func interactiveSetup() {
 	if strings.ToLower(strings.TrimSpace(input)) != "n" {
 		fmt.Println()
 		fmt.Printf("🚀 启动代理服务器于 http://127.0.0.1:%d...\n", cfg.Server.Port)
-		server.Run(&cfg)
+		server.Run(cfg)
 	}
 
 	fmt.Println("配置完成, 按 Ctrl+C 退出")
@@ -187,8 +216,7 @@ func interactiveConfig() {
 			fmt.Println("配置已取消，请先运行 chat2responses setup 配置基础服务。")
 			return
 		}
-		cfgVal := config.DefaultConfig
-		cfg = &cfgVal
+		cfg = &config.Config{Server: config.DefaultConfig.Server}
 		// 引导配置基础 upstream
 		fmt.Print("请输入默认上游 API 地址 (如 https://api.openai.com/v1): ")
 		input, _ = reader.ReadString('\n')
@@ -199,6 +227,13 @@ func interactiveConfig() {
 		cfg.Upstream.APIKey = strings.TrimSpace(input)
 
 		cfg.Model.DefaultModel = "gpt-4o"
+
+		savePath := "config.json"
+		if abs, err := filepath.Abs(savePath); err == nil {
+			cfg.LoadedPath = abs
+		} else {
+			cfg.LoadedPath = savePath
+		}
 	}
 
 	if cfg.Models == nil {
@@ -326,11 +361,15 @@ func interactiveConfig() {
 	}
 
 	// 保存配置
-	if err := config.Save(cfg, "config.json"); err != nil {
+	savePath := cfg.LoadedPath
+	if savePath == "" {
+		savePath = "config.json"
+	}
+	if err := config.Save(cfg, savePath); err != nil {
 		fmt.Fprintf(os.Stderr, "保存配置失败: %s\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("✓ 配置已成功保存至 config.json")
+	fmt.Printf("✓ 配置已成功保存至 %s\n", savePath)
 }
 
 // interactiveGoogleLogin - 协助用户通过谷歌 OAuth2 个人账号进行三方登录获取并续签 Token
@@ -461,8 +500,13 @@ func interactiveGoogleLogin() {
 	cfg, err := config.Load("")
 	if err != nil {
 		fmt.Println("⚠ 未能成功加载基础配置文件以记录，为其新建配置结构...")
-		cfgVal := config.DefaultConfig
-		cfg = &cfgVal
+		cfg = &config.Config{Server: config.DefaultConfig.Server}
+		savePath := "config.json"
+		if abs, err := filepath.Abs(savePath); err == nil {
+			cfg.LoadedPath = abs
+		} else {
+			cfg.LoadedPath = savePath
+		}
 	}
 
 	cfg.GoogleOAuth = &config.GoogleOAuthConfig{
@@ -474,8 +518,12 @@ func interactiveGoogleLogin() {
 		Expiry:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second),
 	}
 
-	if err := config.Save(cfg, "config.json"); err != nil {
-		fmt.Printf("✗ 登录成功但保存 config.json 失败: %v\n", err)
+	savePath := cfg.LoadedPath
+	if savePath == "" {
+		savePath = "config.json"
+	}
+	if err := config.Save(cfg, savePath); err != nil {
+		fmt.Printf("✗ 登录成功但保存 %s 失败: %v\n", savePath, err)
 		return
 	}
 
@@ -494,7 +542,7 @@ func interactiveGoogleLogin() {
 
 // stopServer - 读取 PID 文件并向该进程发送信号，优雅一键关闭服务
 func stopServer() {
-	pidFile := filepath.Join(os.TempDir(), "chat2responses.pid")
+	pidFile := config.GetPIDFilePath()
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
 		fmt.Println("⚠ 未检测到正在运行的 chat2responses 代理服务 (PID 文件不存在)。")

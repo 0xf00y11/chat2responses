@@ -1,16 +1,19 @@
+// codex: max-lines(750)
 // Author: fooyii, Email: fooyii@icloud.com, Date: 2026-06-13
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"chat2responses/internal/codex"
@@ -43,20 +46,29 @@ func New(cfg *config.Config) *Server {
 		s.client.SetTokenProvider(cfg.GetGoogleAccessToken)
 	}
 
-	// 预先初始化配置的所有模型客户端
+	// 预先初始化配置的所有模型客户端，继承缺省全局上游配置。若配置与全局上游一致，则复用默认客户端，避免冗余创建
 	if cfg.Models != nil {
 		for mID, mu := range cfg.Models {
-			if mu.BaseURL != "" && mu.APIKey != "" {
-				actualModel := mID
-				if mu.UpstreamModel != "" {
-					actualModel = mu.UpstreamModel
-				}
-				client := proxy.NewUpstreamClient(mu.BaseURL, mu.APIKey, actualModel)
-				if mu.APIKey == "google_oauth" {
-					client.SetTokenProvider(cfg.GetGoogleAccessToken)
-				}
-				s.clients[mID] = client
+			actualModel := mID
+			if mu.UpstreamModel != "" {
+				actualModel = mu.UpstreamModel
 			}
+			baseURL := mu.BaseURL
+			if baseURL == "" {
+				baseURL = cfg.Upstream.BaseURL
+			}
+			apiKey := mu.APIKey
+			if apiKey == "" {
+				apiKey = cfg.Upstream.APIKey
+			}
+			if baseURL == cfg.Upstream.BaseURL && apiKey == cfg.Upstream.APIKey {
+				continue
+			}
+			client := proxy.NewUpstreamClient(baseURL, apiKey, actualModel)
+			if apiKey == "google_oauth" {
+				client.SetTokenProvider(cfg.GetGoogleAccessToken)
+			}
+			s.clients[mID] = client
 		}
 	}
 
@@ -78,7 +90,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// getClientForModel - 根据请求的模型名称路由至正确的上游客户端实例，并返回该客户端对应要请求的真实模型名
+// getClientForModel - 根据请求的模型名称路由至正确的上游客户端实例，并返回该客户端对应要请求的真实模型名，支持上游配置自动继承
 func (s *Server) getClientForModel(modelName string) (*proxy.UpstreamClient, string) {
 	if modelName == "" {
 		modelName = s.cfg.ResolveModel("")
@@ -92,29 +104,40 @@ func (s *Server) getClientForModel(modelName string) (*proxy.UpstreamClient, str
 			if mu.UpstreamModel != "" {
 				actualModel = mu.UpstreamModel
 			}
-			// 如果该模型配置了专属的 BaseURL 和 APIKey，则需要专属 client
-			if mu.BaseURL != "" && mu.APIKey != "" {
-				s.clientsMu.RLock()
-				c, ok := s.clients[modelName]
-				s.clientsMu.RUnlock()
-				if ok && c != nil {
-					return c, actualModel
-				}
 
-				// 懒加载并双检锁
-				s.clientsMu.Lock()
-				defer s.clientsMu.Unlock()
-				if c, ok = s.clients[modelName]; ok && c != nil {
-					return c, actualModel
-				}
-
-				client := proxy.NewUpstreamClient(mu.BaseURL, mu.APIKey, actualModel)
-				if mu.APIKey == "google_oauth" {
-					client.SetTokenProvider(s.cfg.GetGoogleAccessToken)
-				}
-				s.clients[modelName] = client
-				return client, actualModel
+			s.clientsMu.RLock()
+			c, ok := s.clients[modelName]
+			s.clientsMu.RUnlock()
+			if ok && c != nil {
+				return c, actualModel
 			}
+
+			// 懒加载并双检锁
+			s.clientsMu.Lock()
+			defer s.clientsMu.Unlock()
+			if c, ok = s.clients[modelName]; ok && c != nil {
+				return c, actualModel
+			}
+
+			baseURL := mu.BaseURL
+			if baseURL == "" {
+				baseURL = s.cfg.Upstream.BaseURL
+			}
+			apiKey := mu.APIKey
+			if apiKey == "" {
+				apiKey = s.cfg.Upstream.APIKey
+			}
+
+			if baseURL == s.cfg.Upstream.BaseURL && apiKey == s.cfg.Upstream.APIKey {
+				return s.client, actualModel
+			}
+
+			client := proxy.NewUpstreamClient(baseURL, apiKey, actualModel)
+			if apiKey == "google_oauth" {
+				client.SetTokenProvider(s.cfg.GetGoogleAccessToken)
+			}
+			s.clients[modelName] = client
+			return client, actualModel
 		}
 	}
 
@@ -196,7 +219,7 @@ func parseModelCommand(messages []model.ChatMessage) (cmdType string, param stri
 	}
 
 	trimmed := strings.TrimSpace(contentStr)
-	prefixes := []string{"!", "#", ":", "/"}
+	prefixes := []string{"#", ":", "/"}
 
 	// 1. 判断是否是显示列表指令
 	isList := false
@@ -441,9 +464,9 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 				sb.WriteString("  - *(暂无自定义模型，使用默认全局上游)*\n")
 			}
 			sb.WriteString("\n> 💡 **命令指南**:\n")
-			sb.WriteString("> * **注意**: 由于 Codex 客户端本地会拦截所有 `/` 开头的未知指令，请在聊天中使用 **`!`** 或 **`#`** 作为指令前缀！\n")
-			sb.WriteString("> * 键入 `!switch <模型名称>` 或 `!use <模型名称>` 即可在此会话中直接一键切换当前模型（亦支持 `#` 或 `:` 前缀，例如 `#use gemini-3.5-flash`）。\n")
-			sb.WriteString("> * 键入 `!switch` 或 `!use` 可以随时查看当前可用模型列表与绑定状态。\n")
+			sb.WriteString("> * **注意**: 由于 Codex 客户端本地会拦截所有 `/` 开头的未知指令，请在聊天中使用 **`#`** 作为指令前缀！\n")
+			sb.WriteString("> * 键入 `#switch <模型名称>` 或 `#use <模型名称>` 即可在此会话中直接一键切换当前模型（亦支持 `:` 前缀，例如 `:use gemini-3.5-flash`）。\n")
+			sb.WriteString("> * 键入 `#switch` 或 `#use` 可以随时查看当前可用模型列表与绑定状态。\n")
 			sb.WriteString("> * 在终端运行 `chat2responses config` 可以随时添加或修改模型。\n")
 
 			statusTip = sb.String()
@@ -458,7 +481,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if !isConfigured {
-				statusTip += "\n\n⚠ 提示：模型 \"" + targetModel + "\" 未配置专属上游。接下来的对话将默认路由至本服务的默认全局上游（BaseURL）进行处理。建议您在本地运行 `chat2responses config` 进行绑定。\n提示：请使用 **`!`** 或 **`#`** 开头的指令（如 `!switch <模型>` 或 `#use <模型>`）快速完成切换，避开客户端内置的 `/` 命令拦截器。"
+				statusTip += "\n\n⚠ 提示：模型 \"" + targetModel + "\" 未配置专属上游。接下来的对话将默认路由至本服务的默认全局上游（BaseURL）进行处理。建议您在本地运行 `chat2responses config` 进行绑定。\n提示：请使用 **`#`** 或 **`:`** 开头的指令（如 `#switch <模型>` 或 `:use <模型>`）快速完成切换，避开客户端内置的 `/` 命令拦截器。"
 			}
 		}
 
@@ -609,7 +632,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Connection", "keep-alive")
 		w.Header().Set("X-Request-Id", respID)
 
-		upstreamBody, err := client.ChatCompletionStream(chatReq)
+		upstreamBody, err := client.ChatCompletionStream(r.Context(), chatReq)
 		if err != nil {
 			slog.Error("upstream stream", "error", err)
 			http.Error(w, fmt.Sprintf("upstream error: %s", err), http.StatusBadGateway)
@@ -645,7 +668,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Non-streaming
-	chatResp, err := client.ChatCompletion(chatReq)
+	chatResp, err := client.ChatCompletion(r.Context(), chatReq)
 	if err != nil {
 		slog.Error("upstream", "error", err)
 		http.Error(w, fmt.Sprintf("upstream error: %s", err), http.StatusBadGateway)
@@ -679,11 +702,14 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 func Run(cfg *config.Config) {
 	// 写入当前进程 of PID 文件，方便后续一键优雅关闭
-	pidFile := filepath.Join(os.TempDir(), "chat2responses.pid")
+	pidFile := config.GetPIDFilePath()
 	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644); err != nil {
 		slog.Warn("Failed to write PID file", "error", err)
 	}
-	defer os.Remove(pidFile)
+	defer func() {
+		_ = os.Remove(pidFile)
+		slog.Info("PID file cleaned up successfully")
+	}()
 
 	// 收集用户配置的自定义模型列表
 	var customModels []string
@@ -700,13 +726,34 @@ func Run(cfg *config.Config) {
 
 	s := New(cfg)
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
-	slog.Info("starting chat2responses",
-		"addr", addr,
-		"upstream", cfg.Upstream.BaseURL,
-		"model", cfg.Model.DefaultModel,
-	)
-	if err := http.ListenAndServe(addr, s); err != nil {
-		slog.Error("server", "error", err)
-		os.Exit(1)
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: s,
+	}
+
+	// 捕获系统关闭信号实现优雅退出
+	stopChan := make(chan os.Signal, 1)
+	signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		slog.Info("starting chat2responses",
+			"addr", addr,
+			"upstream", cfg.Upstream.BaseURL,
+			"model", cfg.Model.DefaultModel,
+		)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("server", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	sig := <-stopChan
+	slog.Info("shutting down chat2responses server gracefully", "signal", sig.String())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		slog.Error("server forced shutdown", "error", err)
 	}
 }
