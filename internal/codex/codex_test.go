@@ -22,7 +22,7 @@ func TestAutoCheckAndFix(t *testing.T) {
 	defer os.Setenv("HOME", origHome)
 
 	// 1. Verify AutoCheckAndFix creates a new config if none exists
-	err = AutoCheckAndFix(8000, "gpt-4o", "fake-key", []string{"deepseek-v4-flash", "deepseek-v4-pro", "gemini-3.5-flash"})
+	err = AutoCheckAndFix(57321, "gpt-4o", "fake-key", []string{"deepseek-v4-flash", "deepseek-v4-pro", "gemini-3.5-flash"})
 	if err != nil {
 		t.Fatalf("AutoCheckAndFix returned error: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestAutoCheckAndFix(t *testing.T) {
 	if !strings.Contains(content, `model = "gpt-4o"`) {
 		t.Errorf("expected config to contain model = \"gpt-4o\", got: %s", content)
 	}
-	if !strings.Contains(content, `base_url = "http://127.0.0.1:8000/v1"`) {
+	if !strings.Contains(content, `base_url = "http://127.0.0.1:57321/v1"`) {
 		t.Errorf("expected config to contain correct base_url, got: %s", content)
 	}
 
@@ -63,8 +63,8 @@ wire_api = "responses"
 		t.Fatalf("failed to write incorrect config: %v", err)
 	}
 
-	// 3. Run AutoCheckAndFix and verify it corrects the file to matches current settings (port 8000, model gpt-4o)
-	err = AutoCheckAndFix(8000, "gpt-4o", "fake-key", []string{"deepseek-v4-flash", "deepseek-v4-pro", "gemini-3.5-flash"})
+	// 3. Run AutoCheckAndFix and verify it corrects the file to matches current settings (port 57321, model gpt-4o)
+	err = AutoCheckAndFix(57321, "gpt-4o", "fake-key", []string{"deepseek-v4-flash", "deepseek-v4-pro", "gemini-3.5-flash"})
 	if err != nil {
 		t.Fatalf("AutoCheckAndFix returned error: %v", err)
 	}
@@ -81,8 +81,8 @@ wire_api = "responses"
 	if !strings.Contains(content, `model = "gpt-4o"`) {
 		t.Errorf("expected config to be corrected to contain gpt-4o, got: %s", content)
 	}
-	if !strings.Contains(content, `base_url = "http://127.0.0.1:8000/v1"`) {
-		t.Errorf("expected config to be corrected to contain port 8000 base_url, got: %s", content)
+	if !strings.Contains(content, `base_url = "http://127.0.0.1:57321/v1"`) {
+		t.Errorf("expected config to be corrected to contain port 57321 base_url, got: %s", content)
 	}
 }
 
@@ -96,7 +96,7 @@ model_reasoning_effort = "medium"
 name = "chat2responses"
 wire_api = "responses"
 requires_openai_auth = true
-base_url = "http://127.0.0.1:8000/v1"
+base_url = "http://127.0.0.1:57321/v1"
 
 models = ["deepseek-v4-flash", "deepseek-v4-pro", "gemini-3.5-flash", "glm-5.1"]
 `
@@ -104,7 +104,7 @@ models = ["deepseek-v4-flash", "deepseek-v4-pro", "gemini-3.5-flash", "glm-5.1"]
 	customModels := []string{"deepseek-v4-flash", "deepseek-v4-pro", "gemini-3.5-flash", "glm-5.1"}
 
 	// 第一次执行更新
-	updated := nonDestructiveUpdate(initialContent, 8000, "gemini-3.5-flash", customModels)
+	updated := nonDestructiveUpdate(initialContent, 57321, "gemini-3.5-flash", customModels)
 
 	// 验证 models 列表数据是否保持完整
 	if !strings.Contains(updated, `models = ["deepseek-v4-flash", "deepseek-v4-pro", "gemini-3.5-flash", "glm-5.1"]`) {
@@ -119,7 +119,7 @@ models = ["deepseek-v4-flash", "deepseek-v4-pro", "gemini-3.5-flash", "glm-5.1"]
 	}
 
 	// 第二次执行更新（检查幂等性）
-	twiceUpdated := nonDestructiveUpdate(updated, 8000, "gemini-3.5-flash", customModels)
+	twiceUpdated := nonDestructiveUpdate(updated, 57321, "gemini-3.5-flash", customModels)
 	if twiceUpdated != updated {
 		t.Errorf("expected update to be idempotent, but it changed again.\nFirst update:\n%s\nSecond update:\n%s", updated, twiceUpdated)
 	}

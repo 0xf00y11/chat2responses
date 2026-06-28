@@ -385,11 +385,20 @@ requires_openai_auth = true%s
 					inBlock = true
 				} else {
 					if inBlock {
+						var suffix string
 						if !hasRequiresAuth {
-							lines[i-1] = lines[i-1] + "\nrequires_openai_auth = true"
+							suffix += "\nrequires_openai_auth = true"
 						}
 						if !hasModels && modelsStr != "" {
-							lines[i-1] = lines[i-1] + modelsStr
+							suffix += modelsStr
+						}
+						if suffix != "" {
+							for j := i - 1; j >= 0; j-- {
+								if strings.TrimSpace(lines[j]) != "" {
+									lines[j] = lines[j] + suffix
+									break
+								}
+							}
 						}
 					}
 					inBlock = false
@@ -415,7 +424,7 @@ requires_openai_auth = true%s
 							}
 							lines[i] = fmt.Sprintf(`models = [%s]`, strings.Join(quoted, ", "))
 						} else {
-							lines[i] = ""
+							lines[i] = "# models = [] (chat2responses auto-cleaned)"
 						}
 						hasModels = true
 					}
@@ -423,11 +432,20 @@ requires_openai_auth = true%s
 			}
 		}
 		if inBlock {
+			var suffix string
 			if !hasRequiresAuth {
-				lines[len(lines)-1] = lines[len(lines)-1] + "\nrequires_openai_auth = true"
+				suffix += "\nrequires_openai_auth = true"
 			}
 			if !hasModels && modelsStr != "" {
-				lines[len(lines)-1] = lines[len(lines)-1] + modelsStr
+				suffix += modelsStr
+			}
+			if suffix != "" {
+				for j := len(lines) - 1; j >= 0; j-- {
+					if strings.TrimSpace(lines[j]) != "" {
+						lines[j] = lines[j] + suffix
+						break
+					}
+				}
 			}
 		}
 		newContent = strings.Join(lines, "\n")

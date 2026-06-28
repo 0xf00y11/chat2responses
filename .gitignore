@@ -37,7 +37,7 @@ go.work.sum
 .agy-local.md
 AGENTS.md
 init-codex-rules.sh
-
+init-agy-rules.sh
 # Operating System files
 ## macOS
 .DS_Store

@@ -40,7 +40,7 @@ func TestConfigLoadedPath(t *testing.T) {
 		},
 		"server": {
 			"host": "127.0.0.1",
-			"port": 8000
+			"port": 57321
 		},
 		"model": {
 			"default_model": "gpt-4o"

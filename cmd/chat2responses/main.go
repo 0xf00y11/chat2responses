@@ -14,7 +14,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"chat2responses/internal/codex"
@@ -556,38 +558,78 @@ func stopServer() {
 		return
 	}
 
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		fmt.Printf("⚠ 无法定位进程 PID %d，正在清理废弃 PID 文件...\n", pid)
-		_ = os.Remove(pidFile)
-		return
-	}
-
-	// 优雅发送关闭信号 (Interrupt)
-	fmt.Printf("正在优雅发送关闭信号至 chat2responses 代理服务 (PID: %d)...\n", pid)
-	if err := proc.Signal(os.Interrupt); err != nil {
-		// 信号发送失败，尝试强制结束
-		fmt.Println("⚠ 发送优雅关闭信号失败，正在尝试强制结束进程...")
-		_ = proc.Kill()
-		_ = os.Remove(pidFile)
-		fmt.Println("✓ 服务已被强制结束。")
-		return
-	}
-
-	// 轮询检查 PID 文件是否被 server 正常释放（等待 3 秒）
-	for i := 0; i < 30; i++ {
-		time.Sleep(100 * time.Millisecond)
-		if _, err := os.Stat(pidFile); os.IsNotExist(err) {
-			fmt.Println("✓ 服务已安全停止并成功释放端口。")
-			return
+	// 在 Unix 上通过发送空信号（signal 0）验证进程是否存活
+	// 在 Windows 上跳过此检测，因为 FindProcess 行为不同
+	alive := true
+	if runtime.GOOS != "windows" {
+		proc, err := os.FindProcess(pid)
+		if err == nil {
+			if err := proc.Signal(syscall.Signal(0)); err != nil {
+				alive = false
+			}
+		} else {
+			alive = false
 		}
 	}
 
-	// 超时强制结束
-	fmt.Println("⚠ 服务未响应优雅关闭信号，正在进行强制性终止...")
-	_ = proc.Kill()
+	if !alive {
+		fmt.Printf("⚠ PID %d 对应的进程已不存在，正在清理废弃 PID 文件...\n", pid)
+		_ = os.Remove(pidFile)
+		return
+	}
+
+	var killed bool
+
+	if runtime.GOOS == "windows" {
+		// Windows 不支持向远程进程发送 os.Interrupt，直接强制终止
+		fmt.Printf("正在强制终止 chat2responses 代理服务 (PID: %d)...\n", pid)
+		proc, err := os.FindProcess(pid)
+		if err == nil {
+			if err := proc.Kill(); err != nil {
+				fmt.Printf("⚠ 强制终止失败: %v\n", err)
+			} else {
+				killed = true
+			}
+		}
+	} else {
+		// Unix/Linux/macOS：先尝试优雅信号（SIGTERM），回退到 SIGKILL
+		fmt.Printf("正在优雅发送关闭信号至 chat2responses 代理服务 (PID: %d)...\n", pid)
+		proc, err := os.FindProcess(pid)
+		if err == nil {
+			err = proc.Signal(syscall.SIGTERM)
+			if err != nil {
+				fmt.Println("⚠ 发送 SIGTERM 失败，尝试 os.Interrupt...")
+				err = proc.Signal(os.Interrupt)
+			}
+			if err != nil {
+				fmt.Println("⚠ 发送优雅关闭信号失败，正在尝试强制结束进程...")
+				_ = proc.Kill()
+				_ = os.Remove(pidFile)
+				fmt.Println("✓ 服务已被强制结束。")
+				return
+			}
+
+			// 轮询检查 PID 文件是否被 server 正常释放（等待 3 秒）
+			for i := 0; i < 30; i++ {
+				time.Sleep(100 * time.Millisecond)
+				if _, err := os.Stat(pidFile); os.IsNotExist(err) {
+					fmt.Println("✓ 服务已安全停止并成功释放端口。")
+					return
+				}
+			}
+
+			// 超时强制结束
+			fmt.Println("⚠ 服务未响应优雅关闭信号，正在进行强制性终止...")
+			_ = proc.Kill()
+		}
+	}
+
 	_ = os.Remove(pidFile)
-	fmt.Println("✓ 服务已被强制终止。")
+	if killed {
+		fmt.Println("✓ 服务已被强制终止。")
+	} else {
+		fmt.Println("✓ 服务已停止。")
+	}
 }
 
 func maskKey(key string) string {

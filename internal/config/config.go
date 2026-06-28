@@ -59,7 +59,7 @@ type Config struct {
 }
 
 var DefaultConfig = Config{
-	Server: ServerConfig{Host: "0.0.0.0", Port: 8000},
+	Server: ServerConfig{Host: "0.0.0.0", Port: 57321},
 }
 
 // Load - 从指定路径或候选路径加载配置文件
@@ -68,11 +68,20 @@ func Load(path string) (*Config, error) {
 		Server: DefaultConfig.Server,
 	}
 	candidates := []string{"./config.json"}
-	if home := os.Getenv("XDG_CONFIG_HOME"); home != "" {
-		candidates = append(candidates, filepath.Join(home, "chat2responses", "config.json"))
-	} else if home := os.Getenv("HOME"); home != "" {
+
+	// 跨平台：优先使用 XDG_CONFIG_HOME（Linux/macOS），回退到 ~/.config
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		candidates = append(candidates, filepath.Join(xdg, "chat2responses", "config.json"))
+	} else if home, err := os.UserHomeDir(); err == nil {
 		candidates = append(candidates, filepath.Join(home, ".config", "chat2responses", "config.json"))
 	}
+
+	// Windows %APPDATA% 路径
+	if appData := os.Getenv("APPDATA"); appData != "" {
+		candidates = append(candidates, filepath.Join(appData, "chat2responses", "config.json"))
+	}
+
+	// Linux/macOS 系统级配置
 	candidates = append(candidates, "/etc/chat2responses/config.json")
 
 	if path == "" {
@@ -218,19 +227,11 @@ func GetPIDFilePath() string {
 		wdHash = "default"
 	}
 
-	// 优先存放到当前用户的 Home 目录下（例如 ~/.chat2responses_wdhash.pid）
-	home, err := os.UserHomeDir()
-	if err == nil && home != "" {
-		return filepath.Join(home, fmt.Sprintf(".chat2responses_%s.pid", wdHash))
+	// 跨平台：优先存放在用户缓存目录（Linux/macOS: ~/.cache, Windows: %LOCALAPPDATA%）
+	if cacheDir, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(cacheDir, fmt.Sprintf("chat2responses_%s.pid", wdHash))
 	}
 
-	// 若获取不到 Home，则回退到共享 Temp 目录并带上用户标识和工作目录哈希
-	uidStr := "unknown"
-	if u := os.Getenv("USER"); u != "" {
-		uidStr = u
-	} else if u := os.Getenv("USERNAME"); u != "" {
-		uidStr = u
-	}
-
-	return filepath.Join(os.TempDir(), fmt.Sprintf("chat2responses_%s_%s.pid", uidStr, wdHash))
+	// 若获取不到缓存目录，回退到系统临时目录
+	return filepath.Join(os.TempDir(), fmt.Sprintf("chat2responses_%s.pid", wdHash))
 }
